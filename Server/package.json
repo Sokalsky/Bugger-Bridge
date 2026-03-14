@@ -1,0 +1,15 @@
+{
+  "name": "bugger-bridge-server",
+  "version": "1.0.0",
+  "description": "Multiplayer Bugger Bridge server",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
+}
