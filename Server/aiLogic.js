@@ -37,30 +37,41 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
     }
   }
 
-  // Estimate tricks — high cards in trump are more reliable winners
-  // Non-trump high cards are worth ~0.5 tricks, trump high cards ~0.8
+  // Start from the statistical baseline: each player wins roundCards/playerCount on average
+  const baseline = roundCards / playerCount;
   const nonTrumpHighCards = highCardCount - trumpHighCount;
-  let estimatedTricks = 0;
 
-  if (trump === "No Trump") {
-    // In No Trump, high cards are more valuable, long suits matter
-    estimatedTricks = Math.floor(highCardCount * 0.55);
-  } else {
-    estimatedTricks = Math.floor(nonTrumpHighCards * 0.45) + Math.floor(trumpHighCount * 0.8);
-    // Low trump cards can still win by trumping in on void suits
+  // Calculate how much better/worse this hand is vs average
+  // With 4 players, an off-suit Ace wins ~65%, King ~40%, Queen ~20%
+  // Trump cards are more reliable
+  let trickBonus = 0;
+  for (const card of hand) {
+    const v = RANK_VALUES[card.rank] || 0;
+    const isTrump = card.suit === trump && trump !== "No Trump";
+    if (v === 13) trickBonus += isTrump ? 0.85 : 0.6;      // Ace
+    else if (v === 12) trickBonus += isTrump ? 0.7 : 0.35;  // King
+    else if (v === 11) trickBonus += isTrump ? 0.5 : 0.15;  // Queen
+    else if (v === 10) trickBonus += isTrump ? 0.35 : 0.05; // Jack
+  }
+
+  // Low trump cards can win by trumping voids
+  if (trump !== "No Trump") {
     const lowTrump = trumpCount - trumpHighCount;
-    estimatedTricks += Math.floor(Math.min(lowTrump, voidSuits.size) * 0.5);
+    trickBonus += Math.min(lowTrump, voidSuits.size) * 0.4;
   }
 
-  // Adjust based on hand strength
+  // Combine: baseline adjusted by hand quality
+  // Subtract expected bonus for an average hand to avoid inflating
+  const expectedBonus = baseline * 0.35;
+  let estimatedTricks = baseline + (trickBonus - expectedBonus);
+
+  // Small adjustment for overall hand strength
   const avgValue = totalValue / hand.length;
-  if (avgValue > 9) {
-    estimatedTricks += 1;
-  } else if (avgValue < 4.5) {
-    estimatedTricks = Math.max(0, estimatedTricks - 1);
-  }
+  if (avgValue > 9) estimatedTricks += 0.3;
+  else if (avgValue < 4.5) estimatedTricks -= 0.3;
 
-  // Clamp to valid range
+  // Round and clamp
+  estimatedTricks = Math.round(estimatedTricks);
   estimatedTricks = Math.max(0, Math.min(roundCards, estimatedTricks));
 
   // ===== BLEND WITH LEARNING DATA =====
