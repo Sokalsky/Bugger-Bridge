@@ -123,16 +123,70 @@ async function simulateOneGame(gameNum, players) {
   };
 }
 
-// Debug version — no try/catch, errors propagate to caller
+// Debug version — tests DB directly and returns detailed errors
 export async function simulateOneGameDebug() {
+  const { getPool } = await import("./db.js");
+  const pool = getPool();
+  if (!pool) return { error: "No database pool" };
+
   const players = [
     { id: "sim_alice", name: "Sim Alice", isAI: true },
     { id: "sim_bob", name: "Sim Bob", isAI: true },
     { id: "sim_charlie", name: "Sim Charlie", isAI: true },
     { id: "sim_diana", name: "Sim Diana", isAI: true },
   ];
-  // No try/catch — let errors bubble up
-  return await simulateOneGame(1, players);
+
+  const errors = [];
+
+  // Step 1: Test ensurePlayer
+  for (const p of players) {
+    try {
+      await pool.query(
+        `INSERT INTO players (id, name, is_ai, last_seen_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, last_seen_at = NOW()`,
+        [p.id, p.name, true]
+      );
+    } catch (e) {
+      errors.push({ step: "ensurePlayer", player: p.id, error: e.message });
+    }
+  }
+  if (errors.length > 0) return { errors };
+
+  // Step 2: Test game insert
+  let gameId;
+  try {
+    const r = await pool.query(
+      `INSERT INTO games (room_code, player_count, total_rounds, started_at)
+       VALUES ($1, $2, $3, NOW()) RETURNING id`,
+      ["DBGTEST", 4, 0]
+    );
+    gameId = r.rows[0].id;
+  } catch (e) {
+    return { errors: [{ step: "insertGame", error: e.message }] };
+  }
+
+  // Step 3: Test game_players insert
+  for (let i = 0; i < players.length; i++) {
+    try {
+      await pool.query(
+        `INSERT INTO game_players (game_id, player_id, player_name, is_ai, seat_position)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [gameId, players[i].id, players[i].name, true, i]
+      );
+    } catch (e) {
+      errors.push({ step: "insertGamePlayer", player: players[i].id, error: e.message });
+    }
+  }
+  if (errors.length > 0) return { gameId, errors };
+
+  // Step 4: Run actual simulation
+  try {
+    const result = await simulateOneGame(1, players);
+    return { gameId: gameId, simResult: result, dbTest: "all steps passed" };
+  } catch (e) {
+    return { gameId, errors: [{ step: "simulateOneGame", error: e.message, stack: e.stack }] };
+  }
 }
 
 export async function simulateGames(numGames) {
