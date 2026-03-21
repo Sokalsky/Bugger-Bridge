@@ -113,6 +113,9 @@ function getFullGameState(room) {
 
     // Players
     players: room.players.map(p => ({ id: p.id, name: p.name, isAI: p.isAI || false })),
+
+    // Round history for scoresheet
+    gameHistory: room.gameHistory || [],
   };
 }
 
@@ -201,15 +204,20 @@ function handleCardPlay(roomCode, room, playerId, card) {
       logRoundEnd(room.dbRoundId, room.dbGameId, room.bids, room.tricksWon, room.scores, room.players)
         .catch(e => console.error("DB round end log error:", e.message));
 
-      io.to(roomCode).emit("roundOver", {
-        tricksWon: room.tricksWon,
-        bids: room.bids,
-        scores: room.scores,
+      // Store round history for rejoin
+      const roundHistoryEntry = {
+        tricksWon: { ...room.tricksWon },
+        bids: { ...room.bids },
+        scores: { ...room.scores },
         roundNumber: `${room.roundIndex + 1}/${room.roundSequence.length}`,
         cardsThisRound: room.roundSequence[room.roundIndex],
         trump: getTrump(room.trumpIndex % 5),
         buriedCards: room.buriedCards || [],
-      });
+      };
+      if (!room.gameHistory) room.gameHistory = [];
+      room.gameHistory.push(roundHistoryEntry);
+
+      io.to(roomCode).emit("roundOver", roundHistoryEntry);
 
       room.roundIndex++;
       room.trumpIndex++;
@@ -492,15 +500,18 @@ setInterval(() => {
       logRoundEnd(room.dbRoundId, room.dbGameId, room.bids, room.tricksWon, room.scores, room.players)
         .catch(e => console.error("DB round end log error:", e.message));
 
-      io.to(roomCode).emit("roundOver", {
-        tricksWon: room.tricksWon,
-        bids: room.bids,
-        scores: room.scores,
+      const wdRoundEntry = {
+        tricksWon: { ...room.tricksWon },
+        bids: { ...room.bids },
+        scores: { ...room.scores },
         roundNumber: `${room.roundIndex + 1}/${room.roundSequence.length}`,
         cardsThisRound: room.roundSequence[room.roundIndex],
         trump: getTrump(room.trumpIndex % 5),
         buriedCards: room.buriedCards || [],
-      });
+      };
+      if (!room.gameHistory) room.gameHistory = [];
+      room.gameHistory.push(wdRoundEntry);
+      io.to(roomCode).emit("roundOver", wdRoundEntry);
 
       room.roundIndex++;
       room.trumpIndex++;
@@ -813,6 +824,7 @@ io.on("connection", (socket) => {
     room.biddingOrder = getBiddingOrder(room.players, room.roundIndex);
     room.currentBidIndex = 0;
     room.trickNumber = 0;
+    room.gameHistory = [];
 
     // ===== DATABASE: Log game + round start =====
     (async () => {

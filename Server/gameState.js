@@ -33,6 +33,7 @@ function serializeRoom(room) {
     trickNumber: room.trickNumber || 0,
     dbGameId: room.dbGameId || null,
     dbRoundId: room.dbRoundId || null,
+    gameHistory: room.gameHistory || [],
   };
 }
 
@@ -63,6 +64,7 @@ function deserializeRoom(stored) {
     trickNumber: stored.trickNumber || 0,
     dbGameId: stored.dbGameId || null,
     dbRoundId: stored.dbRoundId || null,
+    gameHistory: stored.gameHistory || [],
     readyPlayers: new Set(),
   };
 }

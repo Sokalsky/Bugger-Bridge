@@ -313,6 +313,11 @@ export default function App() {
         setOpponentHandSizes(sizes);
       }
 
+      // Restore round history for scoresheet
+      if (data.gameHistory && data.gameHistory.length > 0) {
+        setGameHistory(data.gameHistory);
+      }
+
       // Update room data if players were sent
       if (data.players) {
         setRoom((prev) => prev ? { ...prev, players: data.players } : { players: data.players });
