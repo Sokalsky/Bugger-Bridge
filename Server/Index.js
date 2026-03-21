@@ -1102,18 +1102,30 @@ app.post("/api/cleanup-stats", async (req, res) => {
 
 app.post("/api/simulate", async (req, res) => {
   const numGames = Math.min(parseInt(req.query.games) || 10, 50);
-  res.json({ success: true, message: `Starting ${numGames} AI-vs-AI simulations in background...` });
 
-  // Run in background so the request returns immediately
-  (async () => {
-    try {
-      const { simulateGames } = await import("./simulate-games-bg.js");
-      const results = await simulateGames(numGames);
-      console.log(`✅ Simulation complete: ${results.length} games, wins:`, results.wins);
-    } catch (e) {
-      console.error("❌ Simulation error:", e.message);
-    }
-  })();
+  try {
+    const { simulateGames } = await import("./simulate-games-bg.js");
+    // Run in background
+    simulateGames(numGames).then(results => {
+      console.log(`✅ Simulation complete: ${results.gamesCompleted} games`);
+    }).catch(e => {
+      console.error("❌ Simulation error:", e.message, e.stack);
+    });
+    res.json({ success: true, message: `Starting ${numGames} AI-vs-AI simulations in background...` });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message, stack: e.stack });
+  }
+});
+
+// Synchronous test endpoint — runs 1 game and returns the result
+app.get("/api/simulate-test", async (req, res) => {
+  try {
+    const { simulateGames } = await import("./simulate-games-bg.js");
+    const results = await simulateGames(1);
+    res.json({ success: true, data: results });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message, stack: e.stack });
+  }
 });
 
 // ===== START SERVER =====
