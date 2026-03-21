@@ -43,7 +43,7 @@ function getBiddingOrder(players, ri) {
 }
 
 async function simulateOneGame(gameNum, players) {
-  const roomCode = `SIM${gameNum}_${Date.now()}`;
+  const roomCode = `S${gameNum}`;
   const roundSequence = buildRoundSequence(players.length);
 
   // Use direct pool query to avoid the error-swallowing wrapper
