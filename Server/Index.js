@@ -140,6 +140,8 @@ function handleCardPlay(roomCode, room, playerId, card) {
   );
 
   room.currentTrick.push({ playerId, card });
+  if (!room.playedCardsThisRound) room.playedCardsThisRound = [];
+  room.playedCardsThisRound.push(card);
   if (room.currentTrick.length === 1) room.leadSuit = card.suit;
 
   // ===== DATABASE: Log card play =====
@@ -262,7 +264,7 @@ function handleCardPlay(roomCode, room, playerId, card) {
           r.biddingOrder.push(r.players[(dealerIndex + i) % playerCount].id);
         }
         r.currentBidIndex = 0;
-        r.trickNumber = 0;
+        r.trickNumber = 0; r.playedCardsThisRound = [];
 
         (async () => {
           try {
@@ -422,7 +424,16 @@ function processAIPlay(roomCode, room) {
   const aiBid = room.bids[currentPlayerId] || 0;
   const aiTricksWon = room.tricksWon[currentPlayerId] || 0;
 
-  const card = selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, null);
+  // Build full game context for smarter play
+  const gameContext = {
+    allBids: room.bids,
+    allTricksWon: room.tricksWon,
+    playedThisRound: room.playedCardsThisRound || [],
+    playerCount: room.players.length,
+    cardsPerPlayer: room.roundSequence[room.roundIndex],
+  };
+
+  const card = selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, null, gameContext);
   if (!card) return;
 
   // Capture round index to reject stale timeouts that survive across round transitions
@@ -536,7 +547,7 @@ setInterval(() => {
           r.hands = newHands;
           r.buriedCards = newBuriedCards;
           r.tricksWon = Object.fromEntries(r.players.map((p) => [p.id, 0]));
-          r.currentTrick = []; r.leadSuit = null; r.bids = {}; r.trickNumber = 0;
+          r.currentTrick = []; r.leadSuit = null; r.bids = {}; r.trickNumber = 0; r.playedCardsThisRound = [];
           const playerCount = r.players.length;
           const dealerIndex = r.roundIndex % playerCount;
           r.biddingOrder = [];
@@ -828,6 +839,7 @@ io.on("connection", (socket) => {
     room.biddingOrder = getBiddingOrder(room.players, room.roundIndex);
     room.currentBidIndex = 0;
     room.trickNumber = 0;
+    room.playedCardsThisRound = [];
     room.gameHistory = [];
 
     // ===== DATABASE: Log game + round start =====

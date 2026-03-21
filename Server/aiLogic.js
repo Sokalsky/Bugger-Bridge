@@ -125,98 +125,123 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
 }
 
 /**
- * Select a card for the AI to play
+ * Select a card for the AI to play — with full strategic awareness.
+ *
  * @param {Array} hand - The AI's hand
  * @param {Array} currentTrick - Cards already played in this trick
  * @param {string} trump - The trump suit
  * @param {number} bid - The AI's bid for this round
  * @param {number} tricksWon - How many tricks the AI has won so far
+ * @param {Object|null} learningData - Learning data (unused currently, reserved)
+ * @param {Object|null} gameContext - { allBids, allTricksWon, playedThisRound, playerCount, cardsPerPlayer }
  * @returns {Object} The card to play
  */
-export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0, learningData = null) {
+export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0, learningData = null, gameContext = null) {
   if (hand.length === 0) return null;
 
   const leadSuit = currentTrick.length > 0 ? currentTrick[0].card.suit : null;
   const tricksNeeded = bid - tricksWon;
-  const tricksRemaining = hand.length;
+  const cardsLeft = hand.length; // how many plays remain for us
   const wantToWin = tricksNeeded > 0;
   const metBid = tricksNeeded === 0;
-  const overBid = tricksNeeded < 0;
 
-  // ===== TRY LEARNING-BASED DECISION FIRST =====
-  const learnedCard = selectFromLearning(hand, learningData, leadSuit, trump);
-  if (learnedCard) return learnedCard;
+  // ===== CARD TRACKING: figure out what's still out =====
+  const played = gameContext?.playedThisRound || [];
+  const cardTracker = buildCardTracker(hand, played, currentTrick, trump);
 
-  // ===== FALL BACK TO HEURISTICS =====
+  // ===== OPPONENT AWARENESS =====
+  const opponents = analyzeOpponents(gameContext, tricksWon, bid);
+
+  // ===== TRICK PACING: should we be aggressive or conservative? =====
+  // If we need tricks and have few cards left, be aggressive
+  // If we need tricks but have many cards left, be selective (win with guaranteed winners, save others)
+  const urgency = cardsLeft > 0 ? tricksNeeded / cardsLeft : 0; // 0 = no rush, 1 = must win every remaining
+  const isUrgent = urgency > 0.6; // need to win most remaining tricks
+  const canBeSelective = urgency > 0 && urgency <= 0.4; // need tricks but have time
 
   // --- LEADING ---
   if (!leadSuit) {
-    return selectLead(hand, trump, wantToWin, metBid);
+    return selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, cardTracker, opponents);
   }
 
   // --- FOLLOWING SUIT ---
   const followSuitCards = hand.filter(c => c.suit === leadSuit);
-
   if (followSuitCards.length > 0) {
-    return selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantToWin, metBid);
+    return selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantToWin, metBid, isUrgent, cardTracker, opponents);
   }
 
   // --- VOID IN LEAD SUIT ---
-  return selectVoid(hand, currentTrick, trump, wantToWin, metBid);
+  return selectVoid(hand, currentTrick, trump, wantToWin, metBid, isUrgent, opponents);
 }
 
+// ===== CARD TRACKING =====
+
 /**
- * Try to pick a card based on learning data.
- * Returns null if no sufficient data — falls back to heuristics.
+ * Build a tracker of which cards have been played and what's still out.
  */
-function selectFromLearning(hand, learningData, leadSuit, trump) {
-  if (!learningData) return null;
+function buildCardTracker(hand, playedThisRound, currentTrick, trump) {
+  const allPlayed = [...playedThisRound, ...currentTrick.map(p => p.card)];
+  const playedSet = new Set(allPlayed.map(c => `${c.suit}|${c.rank}`));
+  const handSet = new Set(hand.map(c => `${c.suit}|${c.rank}`));
 
-  const { winRates, patterns } = learningData;
+  // For each suit, figure out which high cards are still out (not in our hand, not played)
+  const suits = ["Hearts", "Diamonds", "Clubs", "Spades"];
+  const highRanks = ["A", "K", "Q", "J", "10"];
+  const stillOut = {};
 
-  // Determine valid cards (must follow suit if possible)
-  let validCards = hand;
-  if (leadSuit) {
-    const followSuitCards = hand.filter(c => c.suit === leadSuit);
-    if (followSuitCards.length > 0) validCards = followSuitCards;
-  }
-
-  // Try pattern matching first (higher signal when available)
-  if (patterns && patterns.recommendedCards && patterns.recommendedCards.length > 0) {
-    const patternPicks = patterns.recommendedCards.filter(rec =>
-      validCards.some(c => c.suit === rec.suit && c.rank === rec.rank)
-    );
-
-    if (patternPicks.length > 0 && patternPicks[0].sampleSize >= 3) {
-      const best = patternPicks[0];
-      return validCards.find(c => c.suit === best.suit && c.rank === best.rank) || null;
+  for (const suit of suits) {
+    stillOut[suit] = [];
+    for (const rank of highRanks) {
+      const key = `${suit}|${rank}`;
+      if (!playedSet.has(key) && !handSet.has(key)) {
+        stillOut[suit].push(rank);
+      }
     }
   }
 
-  // Try win rate data
-  if (winRates && Object.keys(winRates).length > 0) {
-    // Score each valid card: if we want to win, prefer high win rate; if ducking, prefer low
-    const tricksNeeded = learningData.context?.tricksNeeded ?? 1;
-    const wantToWin = tricksNeeded > 0;
+  return {
+    playedSet,
+    stillOut, // { Hearts: ["A", "K"], ... } — high cards still out per suit
+    isHighestInSuit: (card) => {
+      // Is this card the highest remaining in its suit?
+      const higher = stillOut[card.suit] || [];
+      return higher.every(r => RANK_VALUES[r] <= RANK_VALUES[card.rank]);
+    },
+    countOutInSuit: (suit) => {
+      // How many cards of this suit are still out (not in hand, not played)?
+      let count = 0;
+      const allRanks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+      for (const rank of allRanks) {
+        const key = `${suit}|${rank}`;
+        if (!playedSet.has(key) && !handSet.has(key)) count++;
+      }
+      return count;
+    },
+  };
+}
 
-    const scored = validCards.map(card => {
-      const key = `${card.suit}|${card.rank}`;
-      const data = winRates[key];
-      if (!data) return { card, score: -1 }; // no data, skip
+// ===== OPPONENT ANALYSIS =====
 
-      // If we want to win, score by win rate. If ducking, score by inverse.
-      const score = wantToWin ? data.winRate : (1 - data.winRate);
-      return { card, score, sampleSize: data.sampleSize };
-    }).filter(s => s.score >= 0 && s.sampleSize >= 5);
+function analyzeOpponents(gameContext, myTricksWon, myBid) {
+  if (!gameContext?.allBids) return { anyoneDesperateForTricks: false, anyoneMetBid: false, opponents: [] };
 
-    // Only use if we have data for at least 2 cards (need comparison)
-    if (scored.length >= 2) {
-      scored.sort((a, b) => b.score - a.score);
-      return scored[0].card;
-    }
+  const opponents = [];
+  let anyoneDesperateForTricks = false;
+  let anyoneMetBid = false;
+
+  for (const [pid, oppBid] of Object.entries(gameContext.allBids)) {
+    const oppTricks = gameContext.allTricksWon?.[pid] || 0;
+    const oppNeeded = oppBid - oppTricks;
+    const metBid = oppNeeded === 0;
+    const overBid = oppNeeded < 0;
+
+    if (metBid || overBid) anyoneMetBid = true;
+    if (oppNeeded > 2) anyoneDesperateForTricks = true;
+
+    opponents.push({ pid, bid: oppBid, tricksWon: oppTricks, needed: oppNeeded, metBid, overBid });
   }
 
-  return null; // not enough data, fall back to heuristics
+  return { anyoneDesperateForTricks, anyoneMetBid, opponents };
 }
 
 // ===== INTERNAL HELPERS =====
@@ -230,77 +255,136 @@ function sortLowToHigh(cards) {
 }
 
 /**
- * Choose a card when leading a trick
+ * Choose a card when leading a trick — with pacing, tracking, and opponent awareness.
  */
-function selectLead(hand, trump, wantToWin, metBid) {
-  const trumpCards = hand.filter(c => c.suit === trump);
-  const nonTrumpCards = hand.filter(c => c.suit !== trump);
+function selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, cardTracker, opponents) {
+  const trumpCards = hand.filter(c => c.suit === trump && trump !== "No Trump");
+  const nonTrumpCards = hand.filter(c => c.suit !== trump || trump === "No Trump");
 
   if (metBid) {
-    // We've hit our bid — lead low to avoid winning more tricks
-    if (nonTrumpCards.length > 0) {
-      return sortLowToHigh(nonTrumpCards)[0];
+    // === DEFENSIVE: we've met our bid ===
+    // If an opponent has also met their bid, lead a high card in their void suit to force them to win
+    // Otherwise, lead our absolute lowest to avoid winning
+    if (opponents.anyoneMetBid && nonTrumpCards.length > 0) {
+      // Lead a mid-high card in a suit where opponents might be strong
+      // This is a "poison" lead — we don't want to win but want to make others win
+      return sortLowToHigh(nonTrumpCards)[0]; // still lead low for safety
     }
-    return sortLowToHigh(trumpCards)[0];
+    if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
+    return sortLowToHigh(trumpCards.length > 0 ? trumpCards : hand)[0];
   }
 
-  if (wantToWin) {
-    // We need tricks — lead strong
-    // Lead high trump if we have many, otherwise lead high non-trump
-    if (trumpCards.length >= 3 && Math.random() < 0.5) {
-      return sortHighToLow(trumpCards)[0];
-    }
-    if (nonTrumpCards.length > 0) {
-      return sortHighToLow(nonTrumpCards)[0];
-    }
-    return sortHighToLow(trumpCards)[0];
+  if (!wantToWin) {
+    // Over-bid — dump lowest
+    if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
+    return sortLowToHigh(hand)[0];
   }
 
-  // Over-bid (shouldn't win more) — lead lowest
-  if (nonTrumpCards.length > 0) {
-    return sortLowToHigh(nonTrumpCards)[0];
+  // === WE NEED TRICKS ===
+
+  if (isUrgent) {
+    // Urgent: need to win most remaining tricks — lead our best cards
+    // Lead guaranteed winners first (highest remaining in a suit)
+    for (const card of sortHighToLow(hand)) {
+      if (cardTracker.isHighestInSuit(card)) return card;
+    }
+    // No guaranteed winners — lead highest trump
+    if (trumpCards.length > 0) return sortHighToLow(trumpCards)[0];
+    return sortHighToLow(hand)[0];
   }
-  return sortLowToHigh(trumpCards)[0];
+
+  if (canBeSelective) {
+    // Selective: we have time — lead guaranteed winners, save questionable ones
+    // Find cards that are now the highest in their suit (safe wins)
+    const guaranteedWinners = hand.filter(c => cardTracker.isHighestInSuit(c));
+    if (guaranteedWinners.length > 0) {
+      // Lead the guaranteed winner from the suit with fewest cards still out
+      // (fewer cards out = less risk of someone being void and trumping)
+      guaranteedWinners.sort((a, b) => cardTracker.countOutInSuit(a.suit) - cardTracker.countOutInSuit(b.suit));
+      return guaranteedWinners[0];
+    }
+
+    // No guaranteed winners — lead from our longest non-trump suit to establish it
+    const suitCounts = {};
+    for (const c of nonTrumpCards) {
+      suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
+    }
+    const longestSuit = Object.entries(suitCounts).sort(([, a], [, b]) => b - a)[0];
+    if (longestSuit && longestSuit[1] >= 3) {
+      // Lead high from our long suit to start exhausting opponents
+      const suitCards = nonTrumpCards.filter(c => c.suit === longestSuit[0]);
+      return sortHighToLow(suitCards)[0];
+    }
+
+    // Fallback: lead highest non-trump
+    if (nonTrumpCards.length > 0) return sortHighToLow(nonTrumpCards)[0];
+    return sortHighToLow(trumpCards.length > 0 ? trumpCards : hand)[0];
+  }
+
+  // Normal need: lead strong but not desperate
+  // Prefer guaranteed winners, then highest non-trump, then trump
+  const guaranteed = hand.filter(c => cardTracker.isHighestInSuit(c));
+  if (guaranteed.length > 0) return guaranteed[0];
+  if (nonTrumpCards.length > 0) return sortHighToLow(nonTrumpCards)[0];
+  return sortHighToLow(trumpCards.length > 0 ? trumpCards : hand)[0];
 }
 
 /**
- * Choose a card when following suit
+ * Choose a card when following suit — with tracking and pacing.
  */
-function selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantToWin, metBid) {
+function selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantToWin, metBid, isUrgent, cardTracker, opponents) {
   const currentWinner = getTrickWinner(currentTrick, trump, leadSuit);
   const hasTrumpInTrick = currentTrick.some(p => p.card.suit === trump && trump !== leadSuit);
 
   if (metBid) {
-    // Don't want to win — play lowest card in suit
+    // Don't want to win — play lowest
     return sortLowToHigh(followSuitCards)[0];
   }
 
   if (wantToWin && !hasTrumpInTrick) {
-    // Try to win: find the cheapest card that beats the current winner
+    // Try to win with cheapest card that beats the current winner
     const winningCards = followSuitCards
-      .filter(c => RANK_VALUES[c.rank] > RANK_VALUES[currentWinner.card.rank] || currentWinner.card.suit !== leadSuit)
+      .filter(c => {
+        if (currentWinner.card.suit === leadSuit) {
+          return RANK_VALUES[c.rank] > RANK_VALUES[currentWinner.card.rank];
+        }
+        return true; // current winner is off-suit/trump, any follow-suit might not win
+      })
       .sort((a, b) => RANK_VALUES[a.rank] - RANK_VALUES[b.rank]);
 
     if (winningCards.length > 0) {
-      return winningCards[0]; // cheapest winner
+      if (isUrgent) {
+        return winningCards[0]; // take it with cheapest winner
+      }
+      // If being selective: only play a winner if it's guaranteed (highest remaining)
+      const guaranteedWin = winningCards.find(c => cardTracker.isHighestInSuit(c));
+      if (guaranteedWin) return guaranteedWin;
+      // Not guaranteed but still a potential winner — play cheapest
+      return winningCards[0];
     }
   }
 
-  // Can't win or don't want to — play lowest
+  // Can't win or don't want to — play lowest (save higher cards for later)
   return sortLowToHigh(followSuitCards)[0];
 }
 
 /**
- * Choose a card when void in the lead suit
+ * Choose a card when void in the lead suit — with opponent awareness.
  */
-function selectVoid(hand, currentTrick, trump, wantToWin, metBid) {
-  const trumpCards = hand.filter(c => c.suit === trump);
-  const nonTrumpCards = hand.filter(c => c.suit !== trump);
-  const hasTrumpInTrick = currentTrick.some(p => p.card.suit === trump);
+function selectVoid(hand, currentTrick, trump, wantToWin, metBid, isUrgent, opponents) {
+  const trumpCards = hand.filter(c => c.suit === trump && trump !== "No Trump");
+  const nonTrumpCards = hand.filter(c => c.suit !== trump || trump === "No Trump");
+  const hasTrumpInTrick = currentTrick.some(p => p.card.suit === trump && trump !== "No Trump");
+
+  if (metBid) {
+    // Don't want to win — discard our worst non-trump card
+    if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
+    return sortLowToHigh(trumpCards.length > 0 ? trumpCards : hand)[0];
+  }
 
   if (wantToWin && trumpCards.length > 0) {
     if (hasTrumpInTrick) {
-      // Someone already trumped — need to over-trump
+      // Over-trump if possible
       const highestTrumpPlayed = currentTrick
         .filter(p => p.card.suit === trump)
         .sort((a, b) => RANK_VALUES[b.card.rank] - RANK_VALUES[a.card.rank])[0];
@@ -310,23 +394,27 @@ function selectVoid(hand, currentTrick, trump, wantToWin, metBid) {
         .sort((a, b) => RANK_VALUES[a.rank] - RANK_VALUES[b.rank]);
 
       if (overTrumps.length > 0) {
-        return overTrumps[0]; // cheapest over-trump
+        if (isUrgent) return overTrumps[0]; // must over-trump
+        // If not urgent, only over-trump if we have trump to spare
+        if (trumpCards.length > 1) return overTrumps[0];
       }
-      // Can't over-trump — discard lowest non-trump
+      // Can't over-trump or saving trump — discard
       if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
       return sortLowToHigh(trumpCards)[0];
     }
 
-    // No trump played yet — trump in with lowest trump
+    // No trump in trick — trump in
+    if (isUrgent) return sortLowToHigh(trumpCards)[0];
+    // If not urgent, only trump if we have plenty of trump
+    if (trumpCards.length >= 2) return sortLowToHigh(trumpCards)[0];
+    // Save our last trump — discard instead
+    if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
     return sortLowToHigh(trumpCards)[0];
   }
 
   // Don't want to win or no trump — discard lowest non-trump
-  if (nonTrumpCards.length > 0) {
-    return sortLowToHigh(nonTrumpCards)[0];
-  }
-  // Only trump left — play lowest
-  return sortLowToHigh(trumpCards)[0];
+  if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
+  return sortLowToHigh(hand)[0];
 }
 
 /**
