@@ -118,6 +118,7 @@ function getFullGameState(room) {
 
 // ===== SHARED CARD PLAYING LOGIC =====
 function handleCardPlay(roomCode, room, playerId, card) {
+  room.lastActivityAt = Date.now();
   const playerHand = room.hands[playerId];
   if (!playerHand) return false;
 
@@ -351,11 +352,15 @@ function processAIBid(roomCode, room) {
   const learningData = room.learningCache?.[`bid_${currentBidderId}`] || null;
   const bid = calculateAIBid(hand, roundCards, trump, room.bids, room.players.length, isLastBidder, learningData);
 
+  const capturedRoundIndex = room.roundIndex;
+
   setTimeout(() => {
     if (!rooms[roomCode]) return;
+    if (rooms[roomCode].roundIndex !== capturedRoundIndex) return;
     if (rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex] !== currentBidderId) return;
 
     rooms[roomCode].bids[currentBidderId] = bid;
+    rooms[roomCode].lastActivityAt = Date.now();
     const allBidsIn = Object.keys(rooms[roomCode].bids).length === rooms[roomCode].players.length;
     io.to(roomCode).emit("biddingUpdate", rooms[roomCode].bids);
     saveGameState(roomCode, rooms[roomCode]).catch(() => {});
@@ -399,26 +404,34 @@ function processAIPlay(roomCode, room) {
   const aiBid = room.bids[currentPlayerId] || 0;
   const aiTricksWon = room.tricksWon[currentPlayerId] || 0;
 
-  // Fully synchronous decision — no promises, no async
   const card = selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, null);
   if (!card) return;
+
+  // Capture round index to reject stale timeouts that survive across round transitions
+  const capturedRoundIndex = room.roundIndex;
 
   setTimeout(() => {
     if (!rooms[roomCode]) return;
     const currentRoom = rooms[roomCode];
+    // Reject if round changed (stale timeout from watchdog duplicate)
+    if (currentRoom.roundIndex !== capturedRoundIndex) return;
     if (currentRoom.playOrder[currentRoom.currentTurnIndex] !== currentPlayerId) return;
     handleCardPlay(roomCode, currentRoom, currentPlayerId, card);
   }, 400 + Math.random() * 200);
 }
 
 // ===== AI WATCHDOG =====
-// Periodically checks if an AI turn is stalled and retries.
-// Also detects and repairs inconsistent state (e.g. turnIndex pointing to
-// a player with an empty hand when others still have cards).
+// Only intervenes when a game is truly stalled (no activity for 10+ seconds).
+// Uses room.lastActivityAt to avoid interfering with active games.
 setInterval(() => {
   for (const [roomCode, room] of Object.entries(rooms)) {
     if (!room.playOrder || room.playOrder.length === 0) continue;
     if (!room.roundSequence || room.roundSequence.length === 0) continue;
+
+    // Only intervene if game has been idle for 10+ seconds
+    const now = Date.now();
+    const lastActivity = room.lastActivityAt || 0;
+    if (now - lastActivity < 10000) continue;
 
     // Check if we're in play phase
     const allBidsIn = Object.keys(room.bids).length === room.players.length;
@@ -426,7 +439,7 @@ setInterval(() => {
       const bidderId = room.biddingOrder?.[room.currentBidIndex];
       const bidder = bidderId && room.players.find(p => p.id === bidderId);
       if (bidder?.isAI && !room.bids[bidderId]) {
-        console.log(`🔄 Watchdog: AI bidder ${bidder.name} stalled in ${roomCode}, retrying...`);
+        console.log(`🔄 Watchdog: AI bidder ${bidder.name} stalled in ${roomCode} (idle ${Math.round((now-lastActivity)/1000)}s), retrying...`);
         processAIBid(roomCode, room);
       }
       continue;
