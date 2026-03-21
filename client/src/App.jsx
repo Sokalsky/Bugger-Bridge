@@ -270,10 +270,52 @@ export default function App() {
     });
 
     socket.on("rejoinGame", (data) => {
-      setGameStarted(true); setRoundData(data); setMyHand(data.myHand || []);
-      setBids(data.bids || {}); setTricksWon(data.tricksWon || {}); setScores(data.scores || {});
-      setPhase(data.phase || "bidding"); setCurrentBidder(data.currentBidder || null);
-      setCurrentPlayer(data.currentPlayer || null); setPlayedCards(data.currentTrick || []);
+      setGameStarted(true);
+
+      // Reconstruct roundData in the format components expect
+      setRoundData({
+        displayRound: data.displayRound,
+        cardsThisRound: data.cardsThisRound,
+        trump: data.trump,
+        scores: data.scores,
+      });
+
+      setMyHand(data.myHand || []);
+      setBids(data.bids || {});
+      setTricksWon(data.tricksWon || {});
+      setScores(data.scores || {});
+      setPlayedCards(data.currentTrick || []);
+
+      // Set phase and turn info
+      const phase = data.phase || "play";
+      setPhase(phase);
+      setCurrentBidder(data.currentBidder || null);
+      setCurrentPlayer(data.currentPlayer || null);
+
+      // Set bidding state
+      if (phase === "bidding") {
+        setBidding(true);
+        setCanPlay(false);
+      } else {
+        setBidding(false);
+        // Enable play if it's our turn
+        const isMyTurn = data.currentPlayer === savedId || data.currentPlayer === myId;
+        setCanPlay(isMyTurn);
+      }
+
+      // Reconstruct opponent hand sizes
+      if (data.handSizes) {
+        const sizes = {};
+        Object.keys(data.handSizes).forEach((pid) => {
+          if (pid !== savedId && pid !== myId) sizes[pid] = data.handSizes[pid];
+        });
+        setOpponentHandSizes(sizes);
+      }
+
+      // Update room data if players were sent
+      if (data.players) {
+        setRoom((prev) => prev ? { ...prev, players: data.players } : { players: data.players });
+      }
     });
 
     return () => socket.removeAllListeners();

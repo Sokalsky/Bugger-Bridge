@@ -77,22 +77,42 @@ function getBiddingOrder(players, roundIndex) {
 }
 
 function getFullGameState(room) {
+  const cardsThisRound = room.roundSequence[room.roundIndex] || 0;
+  const trump = getTrump(room.trumpIndex % 5);
+  const phase = room.biddingOrder?.length > 0 && Object.keys(room.bids).length < room.players.length
+    ? "bidding"
+    : "play";
+
+  // Compute opponent hand sizes (card counts, not actual cards)
+  const handSizes = {};
+  for (const pid of Object.keys(room.hands || {})) {
+    handSizes[pid] = room.hands[pid]?.length || 0;
+  }
+
   return {
-    roundIndex: room.roundIndex,
-    trumpIndex: room.trumpIndex,
+    // Display-ready round info
+    displayRound: `${room.roundIndex + 1}/${room.roundSequence.length}`,
+    cardsThisRound,
+    trump,
     roundSequence: room.roundSequence,
-    hands: room.hands,
+    roundIndex: room.roundIndex,
+
+    // Game state
     bids: room.bids,
     tricksWon: room.tricksWon,
     scores: room.scores,
-    playOrder: room.playOrder,
     currentTrick: room.currentTrick,
+    handSizes,
+
+    // Turn info
+    phase,
     currentBidder: room.biddingOrder?.[room.currentBidIndex],
     currentPlayer: room.playOrder?.[room.currentTurnIndex],
-    phase:
-      room.biddingOrder?.length > 0 && Object.keys(room.bids).length < room.players.length
-        ? "bidding"
-        : "play",
+    playOrder: room.playOrder,
+    biddingOrder: room.biddingOrder,
+
+    // Players
+    players: room.players.map(p => ({ id: p.id, name: p.name, isAI: p.isAI || false })),
   };
 }
 
