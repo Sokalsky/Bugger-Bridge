@@ -467,7 +467,27 @@ setInterval(() => {
     const cardsLeft = Object.values(room.hands).reduce((sum, h) => sum + (h?.length || 0), 0);
 
     // ROUND END DETECTION: all hands empty but round didn't end
-    if (cardsLeft === 0 && room.currentTrick.length === 0) {
+    if (cardsLeft === 0) {
+      // If the last trick is still sitting there unprocessed, resolve it first
+      if (room.currentTrick.length === room.players.length) {
+        console.log(`🔧 Watchdog: Last trick unprocessed in ${roomCode} — resolving`);
+        const trump = getTrump(room.trumpIndex % 5);
+        const winner = determineTrickWinner(room.currentTrick, trump);
+        room.tricksWon[winner] = (room.tricksWon[winner] || 0) + 1;
+        room.trickNumber = (room.trickNumber || 0) + 1;
+        logTrickComplete(room.dbRoundId, room.dbGameId, room.trickNumber, [...room.currentTrick], winner, trump, room.roundSequence[room.roundIndex]).catch(() => {});
+        io.to(roomCode).emit("trickComplete", { winner, tricksWon: room.tricksWon, nextPlayer: winner });
+        room.currentTrick = [];
+        room.leadSuit = null;
+      }
+
+      // Clear any partial trick (shouldn't happen but safety net)
+      if (room.currentTrick.length > 0 && room.currentTrick.length < room.players.length) {
+        console.log(`🔧 Watchdog: Clearing partial trick (${room.currentTrick.length} cards) in ${roomCode}`);
+        room.currentTrick = [];
+        room.leadSuit = null;
+      }
+
       console.log(`🔧 Watchdog: All cards played in ${roomCode} but round didn't end — triggering scoring`);
 
       // Calculate scores
