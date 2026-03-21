@@ -54,14 +54,58 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
     else if (v === 10) trickBonus += isTrump ? 0.35 : 0.05; // Jack
   }
 
-  // Low trump cards can win by trumping voids
+  // ===== SUIT LENGTH ANALYSIS =====
+  const suitCounts = { Hearts: 0, Diamonds: 0, Clubs: 0, Spades: 0 };
+  for (const card of hand) suitCounts[card.suit]++;
+
   if (trump !== "No Trump") {
+    // TRUMP LENGTH BONUS: having lots of trump means your low trump
+    // will outlast everyone else. With 4 players and 13 cards each,
+    // average trump per player is ~3.25. Having 6+ means you dominate.
+    const expectedTrumpPerPlayer = roundCards / 4; // rough average
+    const trumpExcess = trumpCount - expectedTrumpPerPlayer;
+
+    if (trumpExcess > 0) {
+      // Each excess trump beyond average is worth ~0.7 tricks
+      // because after others run out, your low trump are winners
+      trickBonus += trumpExcess * 0.7;
+    }
+
+    // Low trump for trumping voids (original logic, reduced since length bonus covers some)
     const lowTrump = trumpCount - trumpHighCount;
-    trickBonus += Math.min(lowTrump, voidSuits.size) * 0.4;
+    trickBonus += Math.min(lowTrump, voidSuits.size) * 0.3;
+
+    // LONG NON-TRUMP SUIT PENALTY: having 5+ of a non-trump suit means
+    // opponents will likely run out and trump your low cards in that suit.
+    // High cards in long off-suits are LESS reliable.
+    for (const [suit, count] of Object.entries(suitCounts)) {
+      if (suit === trump) continue;
+      if (count >= 5) {
+        // Reduce the bonus for high cards in this suit — they're less likely to win
+        // because opponents run out fast and can trump them
+        const excessLength = count - 4;
+        trickBonus -= excessLength * 0.2;
+      }
+    }
+  } else {
+    // NO TRUMP: long suits are powerful for the LEADER — you can run them
+    // But if you're not leading, long low suits are good for LOSING
+    for (const [suit, count] of Object.entries(suitCounts)) {
+      if (count >= 5) {
+        // Count how many high cards we have in this long suit
+        const highInSuit = hand.filter(c => c.suit === suit && RANK_VALUES[c.rank] >= 10).length;
+        if (highInSuit >= 2) {
+          // Long suit with high cards — we can run this suit and win several tricks
+          trickBonus += (count - 4) * 0.5;
+        } else {
+          // Long suit with low cards — good for losing, reduce our expected tricks
+          trickBonus -= (count - 4) * 0.15;
+        }
+      }
+    }
   }
 
   // Combine: baseline adjusted by hand quality
-  // Subtract expected bonus for an average hand to avoid inflating
   const expectedBonus = baseline * 0.35;
   let estimatedTricks = baseline + (trickBonus - expectedBonus);
 
