@@ -1117,12 +1117,12 @@ app.post("/api/simulate", async (req, res) => {
   }
 });
 
-// Synchronous test endpoint — runs 1 game and returns the result
+// Debug endpoint — runs 1 game synchronously and returns errors
 app.get("/api/simulate-test", async (req, res) => {
   try {
-    const { simulateGames } = await import("./simulate-games-bg.js");
-    const results = await simulateGames(1);
-    res.json({ success: true, data: results });
+    const { simulateOneGameDebug } = await import("./simulate-games-bg.js");
+    const result = await simulateOneGameDebug();
+    res.json({ success: true, data: result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message, stack: e.stack });
   }

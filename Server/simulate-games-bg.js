@@ -123,6 +123,18 @@ async function simulateOneGame(gameNum, players) {
   };
 }
 
+// Debug version — no try/catch, errors propagate to caller
+export async function simulateOneGameDebug() {
+  const players = [
+    { id: "sim_alice", name: "Sim Alice", isAI: true },
+    { id: "sim_bob", name: "Sim Bob", isAI: true },
+    { id: "sim_charlie", name: "Sim Charlie", isAI: true },
+    { id: "sim_diana", name: "Sim Diana", isAI: true },
+  ];
+  // No try/catch — let errors bubble up
+  return await simulateOneGame(1, players);
+}
+
 export async function simulateGames(numGames) {
   const players = [
     { id: "sim_alice", name: "Sim Alice", isAI: true },
