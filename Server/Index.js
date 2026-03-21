@@ -465,10 +465,101 @@ setInterval(() => {
       continue;
     }
 
+    const cardsLeft = Object.values(room.hands).reduce((sum, h) => sum + (h?.length || 0), 0);
+
+    // ROUND END DETECTION: all hands empty but round didn't end
+    if (cardsLeft === 0 && room.currentTrick.length === 0) {
+      console.log(`🔧 Watchdog: All cards played in ${roomCode} but round didn't end — triggering scoring`);
+
+      // Calculate scores
+      room.scores = room.scores || {};
+      for (const player of room.players) {
+        const id = player.id;
+        const tricks = room.tricksWon[id] || 0;
+        const bid = room.bids[id] || 0;
+        const metBid = tricks === bid;
+        const roundScore = metBid ? 10 + tricks : tricks;
+        room.scores[id] = (room.scores[id] || 0) + roundScore;
+      }
+
+      // Log round end
+      logRoundEnd(room.dbRoundId, room.dbGameId, room.bids, room.tricksWon, room.scores, room.players)
+        .catch(e => console.error("DB round end log error:", e.message));
+
+      io.to(roomCode).emit("roundOver", {
+        tricksWon: room.tricksWon,
+        bids: room.bids,
+        scores: room.scores,
+        roundNumber: `${room.roundIndex + 1}/${room.roundSequence.length}`,
+        cardsThisRound: room.roundSequence[room.roundIndex],
+        trump: getTrump(room.trumpIndex % 5),
+        buriedCards: room.buriedCards || [],
+      });
+
+      room.roundIndex++;
+      room.trumpIndex++;
+
+      if (room.roundIndex >= room.roundSequence.length) {
+        logGameEnd(room.dbGameId, room.scores, room.players).catch(() => {});
+        deleteGameState(roomCode).catch(() => {});
+        io.to(roomCode).emit("gameOver", { scores: room.scores, tricksWon: room.tricksWon, bids: room.bids });
+      } else {
+        // Set up next round
+        const nextRoundNumber = room.roundSequence[room.roundIndex];
+        const nextTrump = getTrump(room.trumpIndex % 5);
+        const { hands: newHands, buriedCards: newBuriedCards } = dealCards(room.players, nextRoundNumber);
+        for (const pid in newHands) newHands[pid] = sortHand(newHands[pid]);
+
+        room.hands = newHands;
+        room.buriedCards = newBuriedCards;
+        room.tricksWon = Object.fromEntries(room.players.map((p) => [p.id, 0]));
+        room.currentTrick = [];
+        room.leadSuit = null;
+        room.bids = {};
+        room.trickNumber = 0;
+
+        const playerCount = room.players.length;
+        const dealerIndex = room.roundIndex % playerCount;
+        room.biddingOrder = [];
+        for (let i = 1; i <= playerCount; i++) {
+          room.biddingOrder.push(room.players[(dealerIndex + i) % playerCount].id);
+        }
+        room.currentBidIndex = 0;
+
+        // Log new round
+        (async () => {
+          try {
+            room.dbRoundId = await logRoundStart(room.dbGameId, room.roundIndex, nextRoundNumber, nextTrump, dealerIndex, newHands, newBuriedCards);
+          } catch (e) { console.error("DB round start log error:", e.message); }
+        })();
+
+        for (const player of room.players) {
+          const psocket = player.socketId;
+          if (!psocket) continue;
+          io.to(psocket).emit("roundStarted", {
+            displayRound: `${room.roundIndex + 1}/${room.roundSequence.length}`,
+            cardsThisRound: nextRoundNumber,
+            trump: nextTrump,
+            hands: { [player.id]: newHands[player.id] },
+            currentBidder: room.biddingOrder[0],
+          });
+        }
+
+        io.to(roomCode).emit("startBidding", {
+          round: `${room.roundIndex + 1}/${room.roundSequence.length}`,
+          trump: nextTrump,
+          currentBidder: room.biddingOrder[0],
+        });
+
+        saveGameState(roomCode, room).catch(() => {});
+        processAIBid(roomCode, room);
+      }
+      continue;
+    }
+
     const currentPlayerId = room.playOrder[room.currentTurnIndex];
     const currentPlayer = currentPlayerId && room.players.find(p => p.id === currentPlayerId);
     const hand = currentPlayerId && room.hands[currentPlayerId];
-    const cardsLeft = Object.values(room.hands).reduce((sum, h) => sum + (h?.length || 0), 0);
 
     // STATE REPAIR: current player has no cards but others do — turnIndex is stale
     if (currentPlayerId && (!hand || hand.length === 0) && cardsLeft > 0) {
