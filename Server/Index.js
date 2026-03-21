@@ -125,6 +125,9 @@ function handleCardPlay(roomCode, room, playerId, card) {
   const playerHand = room.hands[playerId];
   if (!playerHand) return false;
 
+  // Prevent double-play: if this player already played in this trick, reject
+  if (room.currentTrick.some(p => p.playerId === playerId)) return false;
+
   const leadSuit = room.currentTrick[0]?.card.suit;
   const hasLeadSuit = leadSuit && playerHand.some((c) => c.suit === leadSuit);
 

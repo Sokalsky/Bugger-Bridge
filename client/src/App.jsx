@@ -256,7 +256,7 @@ export default function App() {
     });
 
     socket.on("invalidBid", (msg) => alert(msg));
-    socket.on("invalidPlay", (msg) => { alert(msg); setCanPlay(true); });
+    socket.on("invalidPlay", () => { setCanPlay(true); });
 
     socket.on("gameOver", (data) => {
       setScores(data.scores);
