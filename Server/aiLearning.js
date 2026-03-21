@@ -121,43 +121,55 @@ export async function getBatchCardWinRates(hand, context) {
  */
 export async function getBidEstimate(handProfile, cardsPerPlayer, trump) {
   try {
-    // Find similar hands: ±1 on high cards, ±1 on trump count, same void range
+    // Find similar hands — include is_ai flag and game recency for weighting
     const result = await query(`
       SELECT
         rr.bid,
         rr.tricks_won,
         rr.met_bid,
         rr.round_score,
+        rr.is_ai,
+        g.finished_at,
         ABS(rr.high_card_count - $1) + ABS(rr.trump_count - $2) + ABS(rr.void_suit_count - $3) as distance
       FROM round_results rr
+      JOIN games g ON rr.game_id = g.id
       WHERE rr.cards_per_player = $4
         AND rr.trump_suit = $5
         AND rr.high_card_count BETWEEN $1 - 2 AND $1 + 2
         AND rr.trump_count BETWEEN $2 - 2 AND $2 + 2
+        AND g.finished_at IS NOT NULL
       ORDER BY distance ASC
-      LIMIT 50
+      LIMIT 100
     `, [handProfile.highCardCount, handProfile.trumpCount, handProfile.voidSuitCount, cardsPerPlayer, trump]);
 
     const rows = result?.rows || [];
     if (rows.length < MIN_BID_SAMPLES) return null;
 
-    // Weight by success and distance — closer hands that met bid count more
+    // Weight by: success, distance, human vs AI, and recency
     let weightedBidSum = 0;
     let weightTotal = 0;
+    const now = Date.now();
 
     for (const row of rows) {
       const distance = parseFloat(row.distance) || 0;
-      const distanceWeight = 1 / (1 + distance); // closer = higher weight
-      const successWeight = row.met_bid ? 2.0 : 0.5; // met bid = much higher weight
-      const weight = distanceWeight * successWeight;
+      const distanceWeight = 1 / (1 + distance);
+      const successWeight = row.met_bid ? 3.0 : 0.3; // met bid = 10x weight over missed
+      // Human plays are worth 5x AI plays
+      const humanWeight = row.is_ai ? 1.0 : 5.0;
+      // Recent games worth more: games from last hour = 2x, last day = 1.5x, older = 1x
+      const gameAge = row.finished_at ? (now - new Date(row.finished_at).getTime()) / 3600000 : 999;
+      const recencyWeight = gameAge < 1 ? 2.0 : gameAge < 24 ? 1.5 : 1.0;
 
-      weightedBidSum += row.bid * weight;
+      const weight = distanceWeight * successWeight * humanWeight * recencyWeight;
+      // Use ACTUAL tricks won (not the bid) as the learned signal
+      // This teaches the AI what hands actually produce, not what bots guessed
+      weightedBidSum += row.tricks_won * weight;
       weightTotal += weight;
     }
 
     const suggestedBid = Math.round(weightedBidSum / weightTotal);
     const metBidCount = rows.filter(r => r.met_bid).length;
-    const confidence = metBidCount / rows.length; // what % of similar hands met their bid
+    const confidence = metBidCount / rows.length;
 
     return {
       suggestedBid: Math.max(0, Math.min(cardsPerPlayer, suggestedBid)),
