@@ -13,7 +13,7 @@ const RANK_VALUES = { A: 13, K: 12, Q: 11, J: 10, "10": 9, "9": 8, "8": 7, "7": 
  * @param {boolean} isLastBidder - Whether this AI is the last to bid (dealer)
  * @returns {number} The bid amount
  */
-export function calculateAIBid(hand, roundCards, trump, existingBids, playerCount, isLastBidder = false) {
+export function calculateAIBid(hand, roundCards, trump, existingBids, playerCount, isLastBidder = false, learningData = null) {
   let highCardCount = 0;
   let trumpCount = 0;
   let totalValue = 0;
@@ -63,6 +63,32 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
   // Clamp to valid range
   estimatedTricks = Math.max(0, Math.min(roundCards, estimatedTricks));
 
+  // ===== BLEND WITH LEARNING DATA =====
+  if (learningData && learningData.sampleSize >= 3) {
+    const learnedBid = learningData.suggestedBid;
+    const confidence = learningData.confidence;
+    const samples = learningData.sampleSize;
+
+    // More data = more trust in the learned bid
+    // 3-10 samples: 25% learned, 75% heuristic
+    // 10-30 samples: 50/50
+    // 30+ samples: 70% learned, 30% heuristic
+    let learnWeight;
+    if (samples >= 30) {
+      learnWeight = 0.7;
+    } else if (samples >= 10) {
+      learnWeight = 0.5;
+    } else {
+      learnWeight = 0.25;
+    }
+
+    // Scale weight by confidence (how often similar hands actually met their bid)
+    learnWeight *= Math.max(0.3, confidence);
+
+    estimatedTricks = Math.round(estimatedTricks * (1 - learnWeight) + learnedBid * learnWeight);
+    estimatedTricks = Math.max(0, Math.min(roundCards, estimatedTricks));
+  }
+
   // Add some randomness for variety (±1)
   const randomAdjust = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
   let finalBid = Math.max(0, Math.min(roundCards, estimatedTricks + randomAdjust));
@@ -96,15 +122,21 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
  * @param {number} tricksWon - How many tricks the AI has won so far
  * @returns {Object} The card to play
  */
-export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0) {
+export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0, learningData = null) {
   if (hand.length === 0) return null;
 
   const leadSuit = currentTrick.length > 0 ? currentTrick[0].card.suit : null;
   const tricksNeeded = bid - tricksWon;
-  const tricksRemaining = hand.length; // each card = one more trick opportunity
+  const tricksRemaining = hand.length;
   const wantToWin = tricksNeeded > 0;
   const metBid = tricksNeeded === 0;
-  const overBid = tricksNeeded < 0; // already won more than bid
+  const overBid = tricksNeeded < 0;
+
+  // ===== TRY LEARNING-BASED DECISION FIRST =====
+  const learnedCard = selectFromLearning(hand, learningData, leadSuit, trump);
+  if (learnedCard) return learnedCard;
+
+  // ===== FALL BACK TO HEURISTICS =====
 
   // --- LEADING ---
   if (!leadSuit) {
@@ -120,6 +152,60 @@ export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0) 
 
   // --- VOID IN LEAD SUIT ---
   return selectVoid(hand, currentTrick, trump, wantToWin, metBid);
+}
+
+/**
+ * Try to pick a card based on learning data.
+ * Returns null if no sufficient data — falls back to heuristics.
+ */
+function selectFromLearning(hand, learningData, leadSuit, trump) {
+  if (!learningData) return null;
+
+  const { winRates, patterns } = learningData;
+
+  // Determine valid cards (must follow suit if possible)
+  let validCards = hand;
+  if (leadSuit) {
+    const followSuitCards = hand.filter(c => c.suit === leadSuit);
+    if (followSuitCards.length > 0) validCards = followSuitCards;
+  }
+
+  // Try pattern matching first (higher signal when available)
+  if (patterns && patterns.recommendedCards && patterns.recommendedCards.length > 0) {
+    const patternPicks = patterns.recommendedCards.filter(rec =>
+      validCards.some(c => c.suit === rec.suit && c.rank === rec.rank)
+    );
+
+    if (patternPicks.length > 0 && patternPicks[0].sampleSize >= 3) {
+      const best = patternPicks[0];
+      return validCards.find(c => c.suit === best.suit && c.rank === best.rank) || null;
+    }
+  }
+
+  // Try win rate data
+  if (winRates && Object.keys(winRates).length > 0) {
+    // Score each valid card: if we want to win, prefer high win rate; if ducking, prefer low
+    const tricksNeeded = learningData.context?.tricksNeeded ?? 1;
+    const wantToWin = tricksNeeded > 0;
+
+    const scored = validCards.map(card => {
+      const key = `${card.suit}|${card.rank}`;
+      const data = winRates[key];
+      if (!data) return { card, score: -1 }; // no data, skip
+
+      // If we want to win, score by win rate. If ducking, score by inverse.
+      const score = wantToWin ? data.winRate : (1 - data.winRate);
+      return { card, score, sampleSize: data.sampleSize };
+    }).filter(s => s.score >= 0 && s.sampleSize >= 5);
+
+    // Only use if we have data for at least 2 cards (need comparison)
+    if (scored.length >= 2) {
+      scored.sort((a, b) => b.score - a.score);
+      return scored[0].card;
+    }
+  }
+
+  return null; // not enough data, fall back to heuristics
 }
 
 // ===== INTERNAL HELPERS =====
