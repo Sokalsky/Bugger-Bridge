@@ -928,6 +928,38 @@ app.get("/api/active-games", async (req, res) => {
   }
 });
 
+app.delete("/api/game-state/:roomCode", async (req, res) => {
+  try {
+    const code = req.params.roomCode.toUpperCase();
+    // Remove from memory
+    if (rooms[code]) {
+      delete rooms[code];
+    }
+    // Remove from database
+    await deleteGameState(code);
+    console.log(`🗑️ Game state deleted: ${code}`);
+    res.json({ success: true, message: `Game ${code} deleted` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/game-state", async (req, res) => {
+  try {
+    // Delete ALL saved game states
+    const { query: dbQuery } = await import("./db.js");
+    await dbQuery("DELETE FROM game_state");
+    // Clear all rooms from memory
+    for (const code of Object.keys(rooms)) {
+      delete rooms[code];
+    }
+    console.log("🗑️ All game states cleared");
+    res.json({ success: true, message: "All game states cleared" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ===== START SERVER =====
 const PORT = process.env.PORT || 4000;
 
