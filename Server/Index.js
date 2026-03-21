@@ -214,7 +214,6 @@ function handleCardPlay(roomCode, room, playerId, card) {
       room.roundIndex++;
       room.trumpIndex++;
       if (room.roundIndex >= room.roundSequence.length) {
-        // ===== DATABASE: Log game end + remove saved state =====
         logGameEnd(room.dbGameId, room.scores, room.players)
           .catch(e => console.error("DB game end log error:", e.message));
         deleteGameState(roomCode).catch(() => {});
@@ -227,57 +226,64 @@ function handleCardPlay(roomCode, room, playerId, card) {
         return true; // Game over
       }
 
-      const nextRoundNumber = room.roundSequence[room.roundIndex];
-      const nextTrump = getTrump(room.trumpIndex % 5);
-      const { hands: newHands, buriedCards: newBuriedCards } = dealCards(room.players, nextRoundNumber);
-      for (const pid in newHands) newHands[pid] = sortHand(newHands[pid]);
+      // Delay next round setup so client processes roundOver/scoresheet first
+      setTimeout(() => {
+        if (!rooms[roomCode]) return;
+        const r = rooms[roomCode];
 
-      room.hands = newHands;
-      room.buriedCards = newBuriedCards;
-      room.tricksWon = Object.fromEntries(room.players.map((p) => [p.id, 0]));
-      room.currentTrick = [];
-      room.leadSuit = null;
-      room.bids = {};
+        const nextRoundNumber = r.roundSequence[r.roundIndex];
+        const nextTrump = getTrump(r.trumpIndex % 5);
+        const { hands: newHands, buriedCards: newBuriedCards } = dealCards(r.players, nextRoundNumber);
+        for (const pid in newHands) newHands[pid] = sortHand(newHands[pid]);
 
-      const playerCount = room.players.length;
-      const dealerIndex = room.roundIndex % playerCount;
-      room.biddingOrder = [];
-      for (let i = 1; i <= playerCount; i++) {
-        room.biddingOrder.push(room.players[(dealerIndex + i) % playerCount].id);
-      }
-      room.currentBidIndex = 0;
-      room.trickNumber = 0;
+        r.hands = newHands;
+        r.buriedCards = newBuriedCards;
+        r.tricksWon = Object.fromEntries(r.players.map((p) => [p.id, 0]));
+        r.currentTrick = [];
+        r.leadSuit = null;
+        r.bids = {};
 
-      // ===== DATABASE: Log new round start =====
-      (async () => {
-        try {
-          room.dbRoundId = await logRoundStart(
-            room.dbGameId, room.roundIndex, nextRoundNumber, nextTrump, dealerIndex, newHands, newBuriedCards
-          );
-        } catch (e) { console.error("DB round start log error:", e.message); }
-      })();
+        const playerCount = r.players.length;
+        const dealerIndex = r.roundIndex % playerCount;
+        r.biddingOrder = [];
+        for (let i = 1; i <= playerCount; i++) {
+          r.biddingOrder.push(r.players[(dealerIndex + i) % playerCount].id);
+        }
+        r.currentBidIndex = 0;
+        r.trickNumber = 0;
 
-      for (const player of room.players) {
-        const psocket = player.socketId;
-        if (!psocket) continue;
-        io.to(psocket).emit("roundStarted", {
-          displayRound: `${room.roundIndex + 1}/${room.roundSequence.length}`,
-          cardsThisRound: nextRoundNumber,
+        (async () => {
+          try {
+            r.dbRoundId = await logRoundStart(
+              r.dbGameId, r.roundIndex, nextRoundNumber, nextTrump, dealerIndex, newHands, newBuriedCards
+            );
+          } catch (e) { console.error("DB round start log error:", e.message); }
+        })();
+
+        for (const player of r.players) {
+          const psocket = player.socketId;
+          if (!psocket) continue;
+          io.to(psocket).emit("roundStarted", {
+            displayRound: `${r.roundIndex + 1}/${r.roundSequence.length}`,
+            cardsThisRound: nextRoundNumber,
+            trump: nextTrump,
+            hands: { [player.id]: newHands[player.id] },
+            currentBidder: r.biddingOrder[0],
+          });
+        }
+
+        io.to(roomCode).emit("startBidding", {
+          round: `${r.roundIndex + 1}/${r.roundSequence.length}`,
           trump: nextTrump,
-          hands: { [player.id]: newHands[player.id] },
-          currentBidder: room.biddingOrder[0],
+          currentBidder: r.biddingOrder[0],
         });
-      }
 
-      io.to(roomCode).emit("startBidding", {
-        round: `${room.roundIndex + 1}/${room.roundSequence.length}`,
-        trump: nextTrump,
-        currentBidder: room.biddingOrder[0],
-      });
-      
-      loadRoundLearningCache(roomCode, room);
-      processAIBid(roomCode, room);
-      return true; // Round over, new round started
+        loadRoundLearningCache(roomCode, r);
+        saveGameState(roomCode, r).catch(() => {});
+        processAIBid(roomCode, r);
+      }, 2000); // 2 second delay — client shows scoresheet first
+
+      return true; // Round over
     }
 
     if (room.playOrder && Array.isArray(room.playOrder)) {
@@ -504,56 +510,47 @@ setInterval(() => {
         deleteGameState(roomCode).catch(() => {});
         io.to(roomCode).emit("gameOver", { scores: room.scores, tricksWon: room.tricksWon, bids: room.bids });
       } else {
-        // Set up next round
-        const nextRoundNumber = room.roundSequence[room.roundIndex];
-        const nextTrump = getTrump(room.trumpIndex % 5);
-        const { hands: newHands, buriedCards: newBuriedCards } = dealCards(room.players, nextRoundNumber);
-        for (const pid in newHands) newHands[pid] = sortHand(newHands[pid]);
+        // Delay next round so client sees scoresheet first (same as handleCardPlay)
+        setTimeout(() => {
+          if (!rooms[roomCode]) return;
+          const r = rooms[roomCode];
+          const nextRoundNumber = r.roundSequence[r.roundIndex];
+          const nextTrump = getTrump(r.trumpIndex % 5);
+          const { hands: newHands, buriedCards: newBuriedCards } = dealCards(r.players, nextRoundNumber);
+          for (const pid in newHands) newHands[pid] = sortHand(newHands[pid]);
+          r.hands = newHands;
+          r.buriedCards = newBuriedCards;
+          r.tricksWon = Object.fromEntries(r.players.map((p) => [p.id, 0]));
+          r.currentTrick = []; r.leadSuit = null; r.bids = {}; r.trickNumber = 0;
+          const playerCount = r.players.length;
+          const dealerIndex = r.roundIndex % playerCount;
+          r.biddingOrder = [];
+          for (let i = 1; i <= playerCount; i++) r.biddingOrder.push(r.players[(dealerIndex + i) % playerCount].id);
+          r.currentBidIndex = 0;
 
-        room.hands = newHands;
-        room.buriedCards = newBuriedCards;
-        room.tricksWon = Object.fromEntries(room.players.map((p) => [p.id, 0]));
-        room.currentTrick = [];
-        room.leadSuit = null;
-        room.bids = {};
-        room.trickNumber = 0;
+          (async () => {
+            try { r.dbRoundId = await logRoundStart(r.dbGameId, r.roundIndex, nextRoundNumber, nextTrump, dealerIndex, newHands, newBuriedCards); }
+            catch (e) { console.error("DB round start log error:", e.message); }
+          })();
 
-        const playerCount = room.players.length;
-        const dealerIndex = room.roundIndex % playerCount;
-        room.biddingOrder = [];
-        for (let i = 1; i <= playerCount; i++) {
-          room.biddingOrder.push(room.players[(dealerIndex + i) % playerCount].id);
-        }
-        room.currentBidIndex = 0;
-
-        // Log new round
-        (async () => {
-          try {
-            room.dbRoundId = await logRoundStart(room.dbGameId, room.roundIndex, nextRoundNumber, nextTrump, dealerIndex, newHands, newBuriedCards);
-          } catch (e) { console.error("DB round start log error:", e.message); }
-        })();
-
-        for (const player of room.players) {
-          const psocket = player.socketId;
-          if (!psocket) continue;
-          io.to(psocket).emit("roundStarted", {
-            displayRound: `${room.roundIndex + 1}/${room.roundSequence.length}`,
-            cardsThisRound: nextRoundNumber,
-            trump: nextTrump,
-            hands: { [player.id]: newHands[player.id] },
-            currentBidder: room.biddingOrder[0],
+          for (const player of r.players) {
+            const psocket = player.socketId;
+            if (!psocket) continue;
+            io.to(psocket).emit("roundStarted", {
+              displayRound: `${r.roundIndex + 1}/${r.roundSequence.length}`,
+              cardsThisRound: nextRoundNumber, trump: nextTrump,
+              hands: { [player.id]: newHands[player.id] },
+              currentBidder: r.biddingOrder[0],
+            });
+          }
+          io.to(roomCode).emit("startBidding", {
+            round: `${r.roundIndex + 1}/${r.roundSequence.length}`,
+            trump: nextTrump, currentBidder: r.biddingOrder[0],
           });
-        }
-
-        io.to(roomCode).emit("startBidding", {
-          round: `${room.roundIndex + 1}/${room.roundSequence.length}`,
-          trump: nextTrump,
-          currentBidder: room.biddingOrder[0],
-        });
-
-        loadRoundLearningCache(roomCode, room);
-        saveGameState(roomCode, room).catch(() => {});
-        processAIBid(roomCode, room);
+          loadRoundLearningCache(roomCode, r);
+          saveGameState(roomCode, r).catch(() => {});
+          processAIBid(roomCode, r);
+        }, 2000);
       }
       continue;
     }

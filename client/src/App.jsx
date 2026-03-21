@@ -251,7 +251,8 @@ export default function App() {
       };
       setRoundSummaryData(roundInfo);
       if (autoHideTimerRef.current) { clearTimeout(autoHideTimerRef.current); autoHideTimerRef.current = null; }
-      setTimeout(() => setShowRoundSummary(true), 1500);
+      // Show scoresheet quickly — server waits 2s before starting next round
+      setTimeout(() => setShowRoundSummary(true), 500);
     });
 
     socket.on("invalidBid", (msg) => alert(msg));
