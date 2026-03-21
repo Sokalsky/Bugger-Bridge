@@ -78,6 +78,7 @@ export default function App() {
   const [roundSummaryData, setRoundSummaryData] = useState(null);
   const [gameHistory, setGameHistory] = useState([]);
   const autoHideTimerRef = useRef(null);
+  const trickClearTimerRef = useRef(null);
 
   // ===============================
   // SOCKET EVENTS
@@ -167,6 +168,11 @@ export default function App() {
     });
 
     socket.on("cardPlayed", ({ trick }) => {
+      // Cancel any pending trick clear from previous trickComplete
+      if (trickClearTimerRef.current) {
+        clearTimeout(trickClearTimerRef.current);
+        trickClearTimerRef.current = null;
+      }
       setPlayedCards(trick);
       if (room?.players) {
         setOpponentHandSizes((prev) => {
@@ -197,7 +203,11 @@ export default function App() {
         setCurrentPlayer(nextPlayer);
         setCanPlay(nextPlayer === savedId || nextPlayer === myId);
       }
-      setTimeout(() => { setPlayedCards([]); setLastWinner(null); setTrickWinnerName(null); }, 1200);
+      // Store the timeout ref so cardPlayed can cancel it if a new trick starts before it fires
+      trickClearTimerRef.current = setTimeout(() => {
+        setPlayedCards([]); setLastWinner(null); setTrickWinnerName(null);
+        trickClearTimerRef.current = null;
+      }, 1200);
     });
 
     socket.on("handUpdate", (data) => {
