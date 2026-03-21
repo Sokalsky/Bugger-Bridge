@@ -171,7 +171,7 @@ export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0, 
   }
 
   // --- VOID IN LEAD SUIT ---
-  return selectVoid(hand, currentTrick, trump, wantToWin, metBid, isUrgent, opponents);
+  return selectVoid(hand, currentTrick, trump, wantToWin, metBid, isUrgent, opponents, cardTracker);
 }
 
 // ===== CARD TRACKING =====
@@ -217,6 +217,35 @@ function buildCardTracker(hand, playedThisRound, currentTrick, trump) {
       }
       return count;
     },
+    dangerScore: (card, trump) => {
+      // How likely is this card to win a FUTURE trick? Higher = more dangerous.
+      // When we've met our bid, we want to dump the most dangerous cards first.
+      const v = RANK_VALUES[card.rank] || 0;
+      const isTrump = card.suit === trump && trump !== "No Trump";
+
+      // Base danger from rank
+      let danger = v; // 2=1, 3=2, ..., A=13
+
+      // Trump cards are more dangerous — they can win any non-trump trick
+      if (isTrump) danger += 15;
+
+      // If this card is the highest remaining in its suit, it's VERY dangerous
+      const higher = stillOut[card.suit] || [];
+      const isHighest = higher.every(r => RANK_VALUES[r] <= RANK_VALUES[card.rank]);
+      if (isHighest) danger += 10;
+
+      // If few cards of this suit are left out there, our high cards are more
+      // likely to win (less competition)
+      let outCount = 0;
+      const allRanks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+      for (const rank of allRanks) {
+        const key = `${card.suit}|${rank}`;
+        if (!playedSet.has(key) && !handSet.has(key)) outCount++;
+      }
+      if (outCount <= 2 && v >= 8) danger += 5; // few cards left in suit, our card is high
+
+      return danger;
+    },
   };
 }
 
@@ -255,6 +284,46 @@ function sortLowToHigh(cards) {
 }
 
 /**
+ * When we've met our bid: pick the card that's most dangerous to hold
+ * (most likely to win a future trick) but that won't win THIS trick.
+ * If following suit, we can only play cards in that suit — pick the
+ * most dangerous one that stays below the current winner.
+ */
+function safestDiscard(cards, currentTrick, trump, cardTracker) {
+  if (cards.length === 1) return cards[0];
+
+  // Sort by danger score (highest danger first — we want to dump those)
+  const sorted = [...cards].sort((a, b) =>
+    cardTracker.dangerScore(b, trump) - cardTracker.dangerScore(a, trump)
+  );
+
+  // If we're following suit in a trick, try to play the most dangerous card
+  // that still LOSES (stays below the current winner)
+  if (currentTrick && currentTrick.length > 0) {
+    const leadSuit = currentTrick[0].card.suit;
+    const winner = getTrickWinner(currentTrick, trump, leadSuit);
+    const hasTrumpInTrick = currentTrick.some(p => p.card.suit === trump && trump !== leadSuit);
+
+    for (const card of sorted) {
+      // Can this card lose the trick?
+      if (card.suit === leadSuit && winner.card.suit === leadSuit) {
+        // Same suit as lead — we lose if we're below the winner
+        if (RANK_VALUES[card.rank] < RANK_VALUES[winner.card.rank]) return card;
+      } else if (card.suit !== trump && hasTrumpInTrick) {
+        // Someone trumped and we're not playing trump — we'll lose
+        return card;
+      } else if (card.suit !== trump && card.suit !== leadSuit) {
+        // Off-suit non-trump discard — can't win
+        return card;
+      }
+    }
+  }
+
+  // Fallback: just return the most dangerous card
+  return sorted[0];
+}
+
+/**
  * Choose a card when leading a trick — with pacing, tracking, and opponent awareness.
  */
 function selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, cardTracker, opponents) {
@@ -262,16 +331,10 @@ function selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, ca
   const nonTrumpCards = hand.filter(c => c.suit !== trump || trump === "No Trump");
 
   if (metBid) {
-    // === DEFENSIVE: we've met our bid ===
-    // If an opponent has also met their bid, lead a high card in their void suit to force them to win
-    // Otherwise, lead our absolute lowest to avoid winning
-    if (opponents.anyoneMetBid && nonTrumpCards.length > 0) {
-      // Lead a mid-high card in a suit where opponents might be strong
-      // This is a "poison" lead — we don't want to win but want to make others win
-      return sortLowToHigh(nonTrumpCards)[0]; // still lead low for safety
-    }
-    if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
-    return sortLowToHigh(trumpCards.length > 0 ? trumpCards : hand)[0];
+    // === DEFENSIVE: dump the most dangerous card we're holding ===
+    // Lead the card most likely to win future tricks — get rid of it now
+    // when we're leading (so it might lose to someone else's higher card)
+    return safestDiscard(hand, null, trump, cardTracker);
   }
 
   if (!wantToWin) {
@@ -337,8 +400,8 @@ function selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantTo
   const hasTrumpInTrick = currentTrick.some(p => p.card.suit === trump && trump !== leadSuit);
 
   if (metBid) {
-    // Don't want to win — play lowest
-    return sortLowToHigh(followSuitCards)[0];
+    // Don't want to win — dump the most dangerous card that still LOSES this trick
+    return safestDiscard(followSuitCards, currentTrick, trump, cardTracker);
   }
 
   if (wantToWin && !hasTrumpInTrick) {
@@ -371,15 +434,15 @@ function selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantTo
 /**
  * Choose a card when void in the lead suit — with opponent awareness.
  */
-function selectVoid(hand, currentTrick, trump, wantToWin, metBid, isUrgent, opponents) {
+function selectVoid(hand, currentTrick, trump, wantToWin, metBid, isUrgent, opponents, cardTracker) {
   const trumpCards = hand.filter(c => c.suit === trump && trump !== "No Trump");
   const nonTrumpCards = hand.filter(c => c.suit !== trump || trump === "No Trump");
   const hasTrumpInTrick = currentTrick.some(p => p.card.suit === trump && trump !== "No Trump");
 
   if (metBid) {
-    // Don't want to win — discard our worst non-trump card
-    if (nonTrumpCards.length > 0) return sortLowToHigh(nonTrumpCards)[0];
-    return sortLowToHigh(trumpCards.length > 0 ? trumpCards : hand)[0];
+    // Don't want to win — dump the most dangerous card (can discard anything when void)
+    // This is the best opportunity to ditch dangerous trump or high cards
+    return safestDiscard(hand, currentTrick, trump, cardTracker);
   }
 
   if (wantToWin && trumpCards.length > 0) {
