@@ -444,7 +444,9 @@ function processAIPlay(roomCode, room) {
 }
 
 // ===== AI WATCHDOG =====
-// Periodically checks if an AI turn is stalled and retries
+// Periodically checks if an AI turn is stalled and retries.
+// Also detects and repairs inconsistent state (e.g. turnIndex pointing to
+// a player with an empty hand when others still have cards).
 setInterval(() => {
   for (const [roomCode, room] of Object.entries(rooms)) {
     if (!room.playOrder || room.playOrder.length === 0) continue;
@@ -453,7 +455,6 @@ setInterval(() => {
     // Check if we're in play phase
     const allBidsIn = Object.keys(room.bids).length === room.players.length;
     if (!allBidsIn) {
-      // Check bidding stall
       const bidderId = room.biddingOrder?.[room.currentBidIndex];
       const bidder = bidderId && room.players.find(p => p.id === bidderId);
       if (bidder?.isAI && !room.bids[bidderId]) {
@@ -465,12 +466,39 @@ setInterval(() => {
 
     const currentPlayerId = room.playOrder[room.currentTurnIndex];
     const currentPlayer = currentPlayerId && room.players.find(p => p.id === currentPlayerId);
-    if (currentPlayer?.isAI) {
-      const hand = room.hands[currentPlayerId];
-      if (hand && hand.length > 0) {
-        console.log(`🔄 Watchdog: AI player ${currentPlayer.name} stalled in ${roomCode}, retrying...`);
-        processAIPlay(roomCode, room);
+    const hand = currentPlayerId && room.hands[currentPlayerId];
+    const cardsLeft = Object.values(room.hands).reduce((sum, h) => sum + (h?.length || 0), 0);
+
+    // STATE REPAIR: current player has no cards but others do — turnIndex is stale
+    if (currentPlayerId && (!hand || hand.length === 0) && cardsLeft > 0) {
+      console.log(`🔧 Watchdog: ${currentPlayer?.name || currentPlayerId} has 0 cards but ${cardsLeft} remain — fixing turnIndex`);
+
+      // Check if current player already played in this trick
+      const alreadyPlayed = room.currentTrick.some(p => p.playerId === currentPlayerId);
+      if (alreadyPlayed) {
+        // Advance to next player who hasn't played in this trick
+        for (let i = 1; i <= room.players.length; i++) {
+          const nextIdx = (room.currentTurnIndex + i) % room.players.length;
+          const nextId = room.playOrder[nextIdx];
+          const nextHand = room.hands[nextId];
+          const nextPlayed = room.currentTrick.some(p => p.playerId === nextId);
+          if (!nextPlayed && nextHand && nextHand.length > 0) {
+            room.currentTurnIndex = nextIdx;
+            console.log(`🔧 Watchdog: Advanced turn to ${room.players.find(p => p.id === nextId)?.name || nextId}`);
+            io.to(roomCode).emit("turnUpdate", { currentPlayer: nextId });
+            saveGameState(roomCode, room).catch(() => {});
+            processAIPlay(roomCode, room);
+            break;
+          }
+        }
       }
+      continue;
+    }
+
+    // Normal stall detection: AI's turn and they have cards but haven't played
+    if (currentPlayer?.isAI && hand && hand.length > 0) {
+      console.log(`🔄 Watchdog: AI player ${currentPlayer.name} stalled in ${roomCode}, retrying...`);
+      processAIPlay(roomCode, room);
     }
   }
 }, 5000); // Check every 5 seconds
