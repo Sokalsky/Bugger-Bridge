@@ -228,6 +228,20 @@ async function runMigrations(p) {
     ON games(finished_at) WHERE finished_at IS NOT NULL
   `);
 
+  // Live game state — survives server restarts
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS game_state (
+      room_code VARCHAR(8) PRIMARY KEY,
+      state JSONB NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await p.query(`
+    CREATE INDEX IF NOT EXISTS idx_game_state_updated
+    ON game_state(updated_at)
+  `);
+
   console.log("✅ Database migrations complete");
 }
 

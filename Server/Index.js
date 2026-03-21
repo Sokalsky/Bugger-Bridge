@@ -13,6 +13,7 @@ import {
   getOverallStats, getPlayerStats, getCardStats, getGameHistory, getBidAnalysis,
 } from "./dataCollector.js";
 import { getBidLearningData, getPlayLearningData } from "./aiLearning.js";
+import { saveGameState, loadAllGameStates, deleteGameState, listActiveGames } from "./gameState.js";
 
 const app = express();
 app.use(cors());
@@ -134,6 +135,7 @@ function handleCardPlay(roomCode, room, playerId, card) {
   ).catch(e => console.error("DB card log error:", e.message));
 
   io.to(roomCode).emit("cardPlayed", { trick: room.currentTrick });
+  saveGameState(roomCode, room).catch(() => {});
   // Add a small delay before sending handUpdate to ensure cardPlayed is processed first
   setTimeout(() => {
     io.to(roomCode).emit("handUpdate", room.hands);
@@ -192,9 +194,10 @@ function handleCardPlay(roomCode, room, playerId, card) {
       room.roundIndex++;
       room.trumpIndex++;
       if (room.roundIndex >= room.roundSequence.length) {
-        // ===== DATABASE: Log game end =====
+        // ===== DATABASE: Log game end + remove saved state =====
         logGameEnd(room.dbGameId, room.scores, room.players)
           .catch(e => console.error("DB game end log error:", e.message));
+        deleteGameState(roomCode).catch(() => {});
 
         io.to(roomCode).emit("gameOver", {
           scores: room.scores,
@@ -317,6 +320,7 @@ function processAIBid(roomCode, room) {
       rooms[roomCode].bids[currentBidderId] = bid;
       const allBidsIn = Object.keys(rooms[roomCode].bids).length === rooms[roomCode].players.length;
       io.to(roomCode).emit("biddingUpdate", rooms[roomCode].bids);
+      saveGameState(roomCode, rooms[roomCode]).catch(() => {});
 
       // Database log
       logBid(
@@ -643,7 +647,8 @@ io.on("connection", (socket) => {
       currentBidder: room.biddingOrder[0],
     });
     
-    // Check if first bidder is AI
+    // Save game state and check if first bidder is AI
+    saveGameState(roomCode, room).catch(() => {});
     processAIBid(roomCode, room);
   });
 
@@ -679,6 +684,7 @@ io.on("connection", (socket) => {
     room.bids[playerId] = bid;
     const allBidsIn = Object.keys(room.bids).length === room.players.length;
     io.to(roomCode).emit("biddingUpdate", room.bids);
+    saveGameState(roomCode, room).catch(() => {});
 
     // ===== DATABASE: Log bid =====
     const bidPlayer = room.players.find(p => p.id === playerId);
@@ -804,6 +810,15 @@ app.get("/api/bids", async (req, res) => {
   }
 });
 
+app.get("/api/active-games", async (req, res) => {
+  try {
+    const activeGames = await listActiveGames();
+    res.json({ success: true, data: activeGames });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ===== START SERVER =====
 const PORT = process.env.PORT || 4000;
 
@@ -811,6 +826,18 @@ async function start() {
   const dbReady = await initDatabase();
   if (dbReady) {
     console.log("✅ Database ready — game data will be tracked");
+
+    // Restore any in-progress games from before the restart
+    try {
+      const restoredRooms = await loadAllGameStates();
+      const count = Object.keys(restoredRooms).length;
+      if (count > 0) {
+        Object.assign(rooms, restoredRooms);
+        console.log(`🔄 Restored ${count} active game(s)`);
+      }
+    } catch (e) {
+      console.error("❌ Failed to restore games:", e.message);
+    }
   } else {
     console.warn("⚠️  Running without database — game data will NOT be tracked");
   }
