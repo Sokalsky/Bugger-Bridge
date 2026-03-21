@@ -155,7 +155,6 @@ function handleCardPlay(roomCode, room, playerId, card) {
   ).catch(e => console.error("DB card log error:", e.message));
 
   io.to(roomCode).emit("cardPlayed", { trick: room.currentTrick });
-  saveGameState(roomCode, room).catch(() => {});
   // Add a small delay before sending handUpdate to ensure cardPlayed is processed first
   setTimeout(() => {
     io.to(roomCode).emit("handUpdate", room.hands);
@@ -291,12 +290,12 @@ function handleCardPlay(roomCode, room, playerId, card) {
       io.to(roomCode).emit("turnUpdate", { currentPlayer: winner });
     } else {
       console.error(`❌ room.playOrder is undefined or not an array!`);
-      // Fallback: use first player
       room.currentTurnIndex = 0;
       if (room.players && room.players.length > 0) {
         io.to(roomCode).emit("turnUpdate", { currentPlayer: room.players[0].id });
       }
     }
+    saveGameState(roomCode, room).catch(() => {});
     processAIPlay(roomCode, room);
   } else {
     if (room.playOrder && Array.isArray(room.playOrder)) {
@@ -305,12 +304,12 @@ function handleCardPlay(roomCode, room, playerId, card) {
       io.to(roomCode).emit("turnUpdate", { currentPlayer: nextPlayer });
     } else {
       console.error(`❌ room.playOrder is undefined or not an array!`);
-      // Fallback: cycle through players
       room.currentTurnIndex = (room.currentTurnIndex + 1) % room.players.length;
       if (room.players && room.players[room.currentTurnIndex]) {
         io.to(roomCode).emit("turnUpdate", { currentPlayer: room.players[room.currentTurnIndex].id });
       }
     }
+    saveGameState(roomCode, room).catch(() => {});
     processAIPlay(roomCode, room);
   }
   return true;
@@ -510,6 +509,18 @@ io.on("connection", (socket) => {
       const gameState = getFullGameState(room);
       const playerHand = room.hands[clientId] || [];
       socket.emit("rejoinGame", { ...gameState, myHand: playerHand });
+
+      // If it's an AI's turn, kick off their action (may have stalled after restore)
+      setTimeout(() => {
+        const currentRoom = rooms[roomCode];
+        if (!currentRoom) return;
+        const phase = gameState.phase;
+        if (phase === "bidding") {
+          processAIBid(roomCode, currentRoom);
+        } else if (phase === "play") {
+          processAIPlay(roomCode, currentRoom);
+        }
+      }, 500);
     }
   });
 
