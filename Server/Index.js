@@ -4,9 +4,18 @@ import { Server } from "socket.io";
 import cors from "cors";
 import { dealCards, getTrump } from "./gameLogic.js";
 import { calculateAIBid, selectAICard } from "./aiLogic.js";
+import { initDatabase, shutdown as dbShutdown } from "./db.js";
+import {
+  logGameStart, logGameEnd,
+  logRoundStart, logRoundEnd,
+  logBid, logCardPlay, logTrickComplete,
+  ensurePlayer,
+  getOverallStats, getPlayerStats, getCardStats, getGameHistory, getBidAnalysis,
+} from "./dataCollector.js";
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -104,6 +113,25 @@ function handleCardPlay(roomCode, room, playerId, card) {
   room.currentTrick.push({ playerId, card });
   if (room.currentTrick.length === 1) room.leadSuit = card.suit;
 
+  // ===== DATABASE: Log card play =====
+  const playingPlayer = room.players.find(p => p.id === playerId);
+  const playerBid = room.bids[playerId] || 0;
+  const playerTricksSoFar = room.tricksWon[playerId] || 0;
+  logCardPlay(
+    room.dbRoundId, room.dbGameId,
+    (room.trickNumber || 0) + 1, room.currentTrick.length, playerId, card,
+    {
+      trump: getTrump(room.trumpIndex % 5),
+      leadSuit: room.leadSuit,
+      cardsPerPlayer: room.roundSequence[room.roundIndex],
+      cardsRemaining: room.hands[playerId]?.length || 0,
+      playerBid,
+      playerTricksSoFar,
+      tricksNeeded: playerBid - playerTricksSoFar,
+      isAI: playingPlayer?.isAI || false,
+    }
+  ).catch(e => console.error("DB card log error:", e.message));
+
   io.to(roomCode).emit("cardPlayed", { trick: room.currentTrick });
   // Add a small delay before sending handUpdate to ensure cardPlayed is processed first
   setTimeout(() => {
@@ -122,6 +150,14 @@ function handleCardPlay(roomCode, room, playerId, card) {
       nextPlayer = winnerIndex !== -1 ? winner : (room.playOrder[0] || winner);
     }
     
+    // ===== DATABASE: Log trick complete =====
+    room.trickNumber = (room.trickNumber || 0) + 1;
+    const trickCopy = [...room.currentTrick];
+    logTrickComplete(
+      room.dbRoundId, room.dbGameId, room.trickNumber,
+      trickCopy, winner, trump, room.roundSequence[room.roundIndex]
+    ).catch(e => console.error("DB trick log error:", e.message));
+
     io.to(roomCode).emit("trickComplete", { winner, tricksWon: room.tricksWon, nextPlayer });
     room.currentTrick = [];
     room.leadSuit = null;
@@ -138,6 +174,10 @@ function handleCardPlay(roomCode, room, playerId, card) {
         room.scores[id] = (room.scores[id] || 0) + roundScore;
       }
 
+      // ===== DATABASE: Log round end =====
+      logRoundEnd(room.dbRoundId, room.dbGameId, room.bids, room.tricksWon, room.scores, room.players)
+        .catch(e => console.error("DB round end log error:", e.message));
+
       io.to(roomCode).emit("roundOver", {
         tricksWon: room.tricksWon,
         bids: room.bids,
@@ -151,7 +191,11 @@ function handleCardPlay(roomCode, room, playerId, card) {
       room.roundIndex++;
       room.trumpIndex++;
       if (room.roundIndex >= room.roundSequence.length) {
-        io.to(roomCode).emit("gameOver", { 
+        // ===== DATABASE: Log game end =====
+        logGameEnd(room.dbGameId, room.scores, room.players)
+          .catch(e => console.error("DB game end log error:", e.message));
+
+        io.to(roomCode).emit("gameOver", {
           scores: room.scores,
           tricksWon: room.tricksWon,
           bids: room.bids,
@@ -178,6 +222,16 @@ function handleCardPlay(roomCode, room, playerId, card) {
         room.biddingOrder.push(room.players[(dealerIndex + i) % playerCount].id);
       }
       room.currentBidIndex = 0;
+      room.trickNumber = 0;
+
+      // ===== DATABASE: Log new round start =====
+      (async () => {
+        try {
+          room.dbRoundId = await logRoundStart(
+            room.dbGameId, room.roundIndex, nextRoundNumber, nextTrump, dealerIndex, newHands, newBuriedCards
+          );
+        } catch (e) { console.error("DB round start log error:", e.message); }
+      })();
 
       for (const player of room.players) {
         const psocket = player.socketId;
@@ -249,7 +303,8 @@ function processAIBid(roomCode, room) {
   const trump = getTrump(room.trumpIndex % 5);
   const hand = room.hands[currentBidderId] || [];
   
-  const bid = calculateAIBid(hand, roundCards, trump, room.bids, room.players.length);
+  const isLastBidder = room.currentBidIndex === room.biddingOrder.length - 1;
+  const bid = calculateAIBid(hand, roundCards, trump, room.bids, room.players.length, isLastBidder);
   
   // Simulate AI thinking delay (300-800ms) - faster
   setTimeout(() => {
@@ -259,6 +314,12 @@ function processAIBid(roomCode, room) {
     rooms[roomCode].bids[currentBidderId] = bid;
     const allBidsIn = Object.keys(rooms[roomCode].bids).length === rooms[roomCode].players.length;
     io.to(roomCode).emit("biddingUpdate", rooms[roomCode].bids);
+
+    // ===== DATABASE: Log AI bid =====
+    logBid(
+      rooms[roomCode].dbRoundId, rooms[roomCode].dbGameId, currentBidderId, bid,
+      rooms[roomCode].currentBidIndex + 1, hand, roundCards, trump, true
+    ).catch(e => console.error("DB AI bid log error:", e.message));
     
     if (allBidsIn) {
       io.to(roomCode).emit("biddingComplete", { bids: rooms[roomCode].bids });
@@ -296,7 +357,9 @@ function processAIPlay(roomCode, room) {
   
   if (hand.length === 0) return;
   
-  const card = selectAICard(hand, room.currentTrick, trump);
+  const aiBid = room.bids[currentPlayerId] || 0;
+  const aiTricksWon = room.tricksWon[currentPlayerId] || 0;
+  const card = selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon);
   
   if (!card) return;
   
@@ -313,12 +376,34 @@ function processAIPlay(roomCode, room) {
   }, 400 + Math.random() * 600);
 }
 
+// ===== HELPERS FOR SOCKET EVENTS =====
+function serializeRoom(room) {
+  return { ...room, readyPlayers: Array.from(room.readyPlayers || []) };
+}
+
+function validateInput(socket, { roomCode, playerName, clientId }) {
+  if (!roomCode || typeof roomCode !== "string" || roomCode.length > 8) {
+    socket.emit("errorMessage", "Invalid room code!");
+    return false;
+  }
+  if (playerName !== undefined && (typeof playerName !== "string" || playerName.length === 0 || playerName.length > 16)) {
+    socket.emit("errorMessage", "Invalid player name!");
+    return false;
+  }
+  if (clientId !== undefined && (typeof clientId !== "string" || clientId.length === 0)) {
+    socket.emit("errorMessage", "Invalid client ID!");
+    return false;
+  }
+  return true;
+}
+
 // ===== SOCKET CONNECTION =====
 io.on("connection", (socket) => {
   console.log(`✅ Connected: ${socket.id}`);
 
   // ===== CREATE ROOM =====
-  socket.on("createRoom", ({ roomCode, playerName, clientId }) => {
+  socket.on("createRoom", ({ roomCode, playerName, clientId } = {}) => {
+    if (!validateInput(socket, { roomCode, playerName, clientId })) return;
     if (rooms[roomCode]) {
       socket.emit("errorMessage", "Room already exists!");
       return;
@@ -336,7 +421,6 @@ io.on("connection", (socket) => {
       currentBidIndex: 0,
       playOrder: [],
       currentTurnIndex: 0,
-      currentTurnIndex: 0,
       currentTrick: [],
       hands: {},
       leadSuit: null,
@@ -345,16 +429,12 @@ io.on("connection", (socket) => {
 
     socket.join(roomCode);
     
-    // Convert Set to Array for JSON serialization
-    const roomUpdate = {
-      ...rooms[roomCode],
-      readyPlayers: Array.from(rooms[roomCode].readyPlayers || []),
-    };
-    io.to(roomCode).emit("roomUpdate", roomUpdate);
+    io.to(roomCode).emit("roomUpdate", serializeRoom(rooms[roomCode]));
   });
 
   // ===== JOIN / REJOIN ROOM =====
-  socket.on("joinRoom", ({ roomCode, playerName, clientId }) => {
+  socket.on("joinRoom", ({ roomCode, playerName, clientId } = {}) => {
+    if (!validateInput(socket, { roomCode, playerName, clientId })) return;
     const room = rooms[roomCode];
     if (!room) {
       socket.emit("errorMessage", "Room not found!");
@@ -373,12 +453,7 @@ io.on("connection", (socket) => {
 
     socket.join(roomCode);
     
-    // Convert Set to Array for JSON serialization
-    const roomUpdate = {
-      ...room,
-      readyPlayers: Array.from(room.readyPlayers || []),
-    };
-    io.to(roomCode).emit("roomUpdate", roomUpdate);
+    io.to(roomCode).emit("roomUpdate", serializeRoom(room));
 
     if (room.roundSequence.length > 0) {
       const gameState = getFullGameState(room);
@@ -508,6 +583,20 @@ io.on("connection", (socket) => {
     room.bids = {};
     room.biddingOrder = getBiddingOrder(room.players, room.roundIndex);
     room.currentBidIndex = 0;
+    room.trickNumber = 0;
+
+    // ===== DATABASE: Log game + round start =====
+    (async () => {
+      try {
+        if (!room.dbGameId) {
+          room.dbGameId = await logGameStart(roomCode, room.players);
+        }
+        const dealerIndex = room.roundIndex % playerCount;
+        room.dbRoundId = await logRoundStart(
+          room.dbGameId, room.roundIndex, roundNumber, trump, dealerIndex, hands, buriedCards
+        );
+      } catch (e) { console.error("DB log error:", e.message); }
+    })();
 
     for (const player of room.players) {
       const psocket = player.socketId;
@@ -532,11 +621,17 @@ io.on("connection", (socket) => {
   });
 
   // ===== BIDDING =====
-  socket.on("makeBid", ({ roomCode, playerId, bid }) => {
+  socket.on("makeBid", ({ roomCode, playerId, bid } = {}) => {
     const room = rooms[roomCode];
     if (!room) return;
 
     const roundCards = room.roundSequence[room.roundIndex];
+
+    // Validate bid is a number within range
+    if (typeof bid !== "number" || !Number.isInteger(bid) || bid < 0 || bid > roundCards) {
+      socket.emit("invalidBid", `❌ Bid must be a whole number between 0 and ${roundCards}.`);
+      return;
+    }
     const expectedBidder = room.biddingOrder[room.currentBidIndex];
     if (playerId !== expectedBidder) {
       socket.emit("invalidBid", "❌ Not your turn to bid!");
@@ -557,6 +652,14 @@ io.on("connection", (socket) => {
     room.bids[playerId] = bid;
     const allBidsIn = Object.keys(room.bids).length === room.players.length;
     io.to(roomCode).emit("biddingUpdate", room.bids);
+
+    // ===== DATABASE: Log bid =====
+    const bidPlayer = room.players.find(p => p.id === playerId);
+    logBid(
+      room.dbRoundId, room.dbGameId, playerId, bid, room.currentBidIndex + 1,
+      room.hands[playerId] || [], roundCards,
+      getTrump(room.trumpIndex % 5), bidPlayer?.isAI || false
+    ).catch(e => console.error("DB bid log error:", e.message));
 
     if (allBidsIn) {
       io.to(roomCode).emit("biddingComplete", { bids: room.bids });
@@ -626,5 +729,73 @@ io.on("connection", (socket) => {
   });
 });
 
+// ===== API ENDPOINTS =====
+app.get("/api/stats", async (req, res) => {
+  try {
+    const stats = await getOverallStats();
+    res.json({ success: true, data: stats });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/players", async (req, res) => {
+  try {
+    const players = await getPlayerStats();
+    res.json({ success: true, data: players });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/cards", async (req, res) => {
+  try {
+    const cardsPerPlayer = req.query.round ? parseInt(req.query.round) : null;
+    const cards = await getCardStats(cardsPerPlayer);
+    res.json({ success: true, data: cards });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/games", async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const games = await getGameHistory(limit);
+    res.json({ success: true, data: games });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/bids", async (req, res) => {
+  try {
+    const analysis = await getBidAnalysis();
+    res.json({ success: true, data: analysis });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ===== START SERVER =====
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => console.log(`🚀 Bugger Bridge server running on port ${PORT}`));
+
+async function start() {
+  const dbReady = await initDatabase();
+  if (dbReady) {
+    console.log("✅ Database ready — game data will be tracked");
+  } else {
+    console.warn("⚠️  Running without database — game data will NOT be tracked");
+  }
+
+  server.listen(PORT, () => console.log(`🚀 Bugger Bridge server running on port ${PORT}`));
+}
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("Shutting down...");
+  await dbShutdown();
+  process.exit(0);
+});
+
+start();

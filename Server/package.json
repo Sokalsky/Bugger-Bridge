@@ -5,11 +5,12 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node Index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "pg": "^8.13.1",
     "socket.io": "^4.8.1"
   }
 }
