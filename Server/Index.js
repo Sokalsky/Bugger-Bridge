@@ -1120,9 +1120,95 @@ app.post("/api/simulate", async (req, res) => {
 // Debug endpoint — runs 1 game synchronously and returns errors
 app.get("/api/simulate-test", async (req, res) => {
   try {
-    const { simulateOneGameDebug } = await import("./simulate-games-bg.js");
-    const result = await simulateOneGameDebug();
-    res.json({ success: true, data: result });
+    // Inline mini-simulation to avoid module cache issues
+    const { getPool } = await import("./db.js");
+    const pool = getPool();
+    if (!pool) return res.json({ error: "no pool" });
+
+    const players = [
+      { id: "sim_a", name: "Sim Alice", isAI: true },
+      { id: "sim_b", name: "Sim Bob", isAI: true },
+      { id: "sim_c", name: "Sim Charlie", isAI: true },
+      { id: "sim_d", name: "Sim Diana", isAI: true },
+    ];
+
+    // Ensure players
+    for (const p of players) {
+      await pool.query(
+        `INSERT INTO players (id, name, is_ai, last_seen_at) VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, last_seen_at = NOW()`,
+        [p.id, p.name, true]
+      );
+    }
+
+    // Create game with short room code
+    const gr = await pool.query(
+      `INSERT INTO games (room_code, player_count, total_rounds, started_at)
+       VALUES ($1, $2, $3, NOW()) RETURNING id`, ["ST", 4, 28]
+    );
+    const gameId = gr.rows[0].id;
+
+    for (let i = 0; i < players.length; i++) {
+      await pool.query(
+        `INSERT INTO game_players (game_id, player_id, player_name, is_ai, seat_position)
+         VALUES ($1, $2, $3, $4, $5)`, [gameId, players[i].id, players[i].name, true, i]
+      );
+    }
+
+    // Play 1 round (5 cards) to test the full pipeline
+    const cardsPerPlayer = 5;
+    const trump = "Spades";
+    const { hands, buriedCards } = dealCards(players, cardsPerPlayer);
+    for (const pid in hands) hands[pid] = sortHand(hands[pid]);
+
+    const rr = await pool.query(
+      `INSERT INTO rounds (game_id, round_index, cards_per_player, trump_suit, dealer_index, buried_cards)
+       VALUES ($1, 0, $2, $3, 0, $4) RETURNING id`, [gameId, cardsPerPlayer, trump, JSON.stringify(buriedCards)]
+    );
+    const roundId = rr.rows[0].id;
+
+    // Bid
+    const biddingOrder = players.map(p => p.id);
+    const bids = {};
+    for (let i = 0; i < 4; i++) {
+      const bid = calculateAIBid(hands[biddingOrder[i]], cardsPerPlayer, trump, bids, 4, i === 3, null);
+      bids[biddingOrder[i]] = bid;
+      await logBid(roundId, gameId, biddingOrder[i], bid, i + 1, hands[biddingOrder[i]], cardsPerPlayer, trump, true);
+    }
+
+    // Play tricks
+    const tricksWon = Object.fromEntries(players.map(p => [p.id, 0]));
+    let turnIdx = 0;
+    for (let t = 0; t < cardsPerPlayer; t++) {
+      const trick = [];
+      for (let p = 0; p < 4; p++) {
+        const pid = biddingOrder[turnIdx];
+        const card = selectAICard(hands[pid], trick, trump, bids[pid], tricksWon[pid], null);
+        await logCardPlay(roundId, gameId, t + 1, p + 1, pid, card, {
+          trump, leadSuit: trick[0]?.card.suit || null, cardsPerPlayer,
+          cardsRemaining: hands[pid].length - 1, playerBid: bids[pid],
+          playerTricksSoFar: tricksWon[pid], tricksNeeded: bids[pid] - tricksWon[pid], isAI: true,
+        });
+        hands[pid] = hands[pid].filter(c => !(c.rank === card.rank && c.suit === card.suit));
+        trick.push({ playerId: pid, card });
+        turnIdx = (turnIdx + 1) % 4;
+      }
+      const winner = determineTrickWinner(trick, trump);
+      tricksWon[winner]++;
+      await logTrickComplete(roundId, gameId, t + 1, trick, winner, trump, cardsPerPlayer);
+      turnIdx = biddingOrder.indexOf(winner);
+    }
+
+    // Score
+    const scores = {};
+    for (const p of players) {
+      const met = tricksWon[p.id] === bids[p.id];
+      scores[p.id] = met ? 10 + tricksWon[p.id] : tricksWon[p.id];
+    }
+    await logRoundEnd(roundId, gameId, bids, tricksWon, scores, players);
+    await pool.query(`UPDATE games SET finished_at = NOW(), total_rounds = 1 WHERE id = $1`, [gameId]);
+
+    res.json({ success: true, gameId, bids, tricksWon, scores, message: "1 round simulated successfully" });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message, stack: e.stack });
   }
