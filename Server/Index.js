@@ -383,36 +383,54 @@ function processAIBid(roomCode, room) {
 }
 
 function processAIPlay(roomCode, room) {
-  const currentPlayerId = room.playOrder[room.currentTurnIndex];
+  const currentPlayerId = room.playOrder?.[room.currentTurnIndex];
+  if (!currentPlayerId) {
+    console.error(`❌ AI Play: No player at turnIndex ${room.currentTurnIndex}, playOrder:`, room.playOrder);
+    return;
+  }
   const currentPlayer = room.players.find(p => p.id === currentPlayerId);
 
   if (!currentPlayer || !currentPlayer.isAI) return;
 
   const trump = getTrump(room.trumpIndex % 5);
-  const hand = room.hands[currentPlayerId] || [];
+  const hand = room.hands[currentPlayerId];
 
-  if (hand.length === 0) return;
+  if (!hand || hand.length === 0) {
+    console.error(`❌ AI Play: ${currentPlayer.name} has no cards! Hand:`, hand);
+    return;
+  }
 
   const aiBid = room.bids[currentPlayerId] || 0;
   const aiTricksWon = room.tricksWon[currentPlayerId] || 0;
   const cardsPerPlayer = room.roundSequence[room.roundIndex];
 
+  console.log(`🤖 AI Play: ${currentPlayer.name} thinking... (hand: ${hand.length} cards, trick: ${room.currentTrick.length}/${room.players.length})`);
+
   // Helper to execute the AI play with a given card
   function executePlay(card) {
-    if (!card) return;
+    if (!card) {
+      console.error(`❌ AI Play: ${currentPlayer.name} selectAICard returned null! Hand:`, JSON.stringify(hand));
+      return;
+    }
     const delay = 400 + Math.random() * 600;
     setTimeout(() => {
-      if (!rooms[roomCode]) return;
+      if (!rooms[roomCode]) {
+        console.error(`❌ AI Play: Room ${roomCode} no longer exists`);
+        return;
+      }
       const currentRoom = rooms[roomCode];
-      // Re-verify it's still this AI's turn
-      if (currentRoom.playOrder[currentRoom.currentTurnIndex] !== currentPlayerId) return;
+      if (currentRoom.playOrder[currentRoom.currentTurnIndex] !== currentPlayerId) {
+        console.log(`⏭️ AI Play: ${currentPlayer.name} turn already passed (expected ${currentPlayerId}, got ${currentRoom.playOrder[currentRoom.currentTurnIndex]})`);
+        return;
+      }
+      console.log(`🃏 AI Play: ${currentPlayer.name} plays ${card.rank} of ${card.suit}`);
       handleCardPlay(roomCode, currentRoom, currentPlayerId, card);
     }, delay);
   }
 
-  // Try to fetch learning data with a timeout so it never stalls
+  // Fetch learning data with 2s timeout, then play
   const learningTimeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("Learning query timeout")), 2000)
+    setTimeout(() => reject(new Error("timeout")), 2000)
   );
 
   Promise.race([
@@ -421,10 +439,41 @@ function processAIPlay(roomCode, room) {
   ]).then(learningData => {
     executePlay(selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, learningData));
   }).catch(() => {
-    // Learning failed or timed out — use heuristics
     executePlay(selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, null));
   });
 }
+
+// ===== AI WATCHDOG =====
+// Periodically checks if an AI turn is stalled and retries
+setInterval(() => {
+  for (const [roomCode, room] of Object.entries(rooms)) {
+    if (!room.playOrder || room.playOrder.length === 0) continue;
+    if (!room.roundSequence || room.roundSequence.length === 0) continue;
+
+    // Check if we're in play phase
+    const allBidsIn = Object.keys(room.bids).length === room.players.length;
+    if (!allBidsIn) {
+      // Check bidding stall
+      const bidderId = room.biddingOrder?.[room.currentBidIndex];
+      const bidder = bidderId && room.players.find(p => p.id === bidderId);
+      if (bidder?.isAI && !room.bids[bidderId]) {
+        console.log(`🔄 Watchdog: AI bidder ${bidder.name} stalled in ${roomCode}, retrying...`);
+        processAIBid(roomCode, room);
+      }
+      continue;
+    }
+
+    const currentPlayerId = room.playOrder[room.currentTurnIndex];
+    const currentPlayer = currentPlayerId && room.players.find(p => p.id === currentPlayerId);
+    if (currentPlayer?.isAI) {
+      const hand = room.hands[currentPlayerId];
+      if (hand && hand.length > 0) {
+        console.log(`🔄 Watchdog: AI player ${currentPlayer.name} stalled in ${roomCode}, retrying...`);
+        processAIPlay(roomCode, room);
+      }
+    }
+  }
+}, 5000); // Check every 5 seconds
 
 // ===== HELPERS FOR SOCKET EVENTS =====
 function serializeRoom(room) {
