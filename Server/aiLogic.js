@@ -141,9 +141,7 @@ export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0, 
 
   const leadSuit = currentTrick.length > 0 ? currentTrick[0].card.suit : null;
   const tricksNeeded = bid - tricksWon;
-  const cardsLeft = hand.length; // how many plays remain for us
-  const wantToWin = tricksNeeded > 0;
-  const metBid = tricksNeeded === 0;
+  const cardsLeft = hand.length;
 
   // ===== CARD TRACKING: figure out what's still out =====
   const played = gameContext?.playedThisRound || [];
@@ -152,12 +150,37 @@ export function selectAICard(hand, currentTrick, trump, bid = 0, tricksWon = 0, 
   // ===== OPPONENT AWARENESS =====
   const opponents = analyzeOpponents(gameContext, tricksWon, bid);
 
+  // ===== OVER-BID STRATEGY =====
+  // If we're over our bid, decide whether to keep losing (screw others) or switch to winning (maximize points)
+  let wantToWin = tricksNeeded > 0;
+  let metBid = tricksNeeded === 0;
+
+  if (tricksNeeded < 0) {
+    // We're over-bid. Check: are we the ONLY one with extra tricks?
+    const totalBids = Object.values(gameContext?.allBids || {}).reduce((s, b) => s + b, 0);
+    const totalTricksWon = Object.values(gameContext?.allTricksWon || {}).reduce((s, t) => s + t, 0);
+    const cardsPerPlayer = gameContext?.cardsPerPlayer || 0;
+    const extrasStillAvailable = totalTricksWon < cardsPerPlayer; // more tricks to play
+    const othersOverBid = opponents.opponents.some(o => o.needed < 0 && o.pid !== undefined);
+
+    if (!othersOverBid && extrasStillAvailable) {
+      // We're the ONLY one over-bid and there are tricks left — keep trying to LOSE
+      // to push extra tricks onto opponents and screw up their bids
+      metBid = true; // pretend we've met our bid (duck everything)
+      wantToWin = false;
+    } else {
+      // Others are also over, or we've already absorbed all extras
+      // Switch to WINNING — maximize our points (tricks won) since we've
+      // already lost the 10-point bonus. Try to cause others to go over too.
+      wantToWin = true;
+      metBid = false;
+    }
+  }
+
   // ===== TRICK PACING: should we be aggressive or conservative? =====
-  // If we need tricks and have few cards left, be aggressive
-  // If we need tricks but have many cards left, be selective (win with guaranteed winners, save others)
-  const urgency = cardsLeft > 0 ? tricksNeeded / cardsLeft : 0; // 0 = no rush, 1 = must win every remaining
-  const isUrgent = urgency > 0.6; // need to win most remaining tricks
-  const canBeSelective = urgency > 0 && urgency <= 0.4; // need tricks but have time
+  const urgency = cardsLeft > 0 ? Math.max(0, tricksNeeded) / cardsLeft : 0;
+  const isUrgent = urgency > 0.6;
+  const canBeSelective = urgency > 0 && urgency <= 0.4;
 
   // --- LEADING ---
   if (!leadSuit) {
@@ -220,13 +243,21 @@ function buildCardTracker(hand, playedThisRound, currentTrick, trump) {
     dangerScore: (card, trump) => {
       // How likely is this card to win a FUTURE trick? Higher = more dangerous.
       // When we've met our bid, we want to dump the most dangerous cards first.
+      // We also WANT to keep very low cards (2-4) — they're safe guaranteed losers.
       const v = RANK_VALUES[card.rank] || 0;
       const isTrump = card.suit === trump && trump !== "No Trump";
 
-      // Base danger from rank
-      let danger = v; // 2=1, 3=2, ..., A=13
+      // Base danger: mid-range cards (6-9) are the MOST dangerous to keep
+      // because they might accidentally win. Low cards (2-4) are safe keepers.
+      // High cards (10+) are obvious dangers.
+      let danger;
+      if (v <= 3) danger = 1;          // 2, 3, 4 — safe to keep (guaranteed losers)
+      else if (v <= 5) danger = 4;     // 5, 6 — somewhat safe
+      else if (v <= 8) danger = 9;     // 7, 8, 9 — DANGEROUS mid-range, might accidentally win
+      else if (v <= 10) danger = 12;   // 10, J — high, likely winners
+      else danger = v + 2;             // Q=13, K=14, A=15 — obvious dangers
 
-      // Trump cards are more dangerous — they can win any non-trump trick
+      // Trump cards are much more dangerous — they can win any non-trump trick
       if (isTrump) danger += 15;
 
       // If this card is the highest remaining in its suit, it's VERY dangerous
@@ -234,7 +265,7 @@ function buildCardTracker(hand, playedThisRound, currentTrick, trump) {
       const isHighest = higher.every(r => RANK_VALUES[r] <= RANK_VALUES[card.rank]);
       if (isHighest) danger += 10;
 
-      // If few cards of this suit are left out there, our high cards are more
+      // If few cards of this suit are left out there, mid+ cards are more
       // likely to win (less competition)
       let outCount = 0;
       const allRanks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
@@ -242,7 +273,8 @@ function buildCardTracker(hand, playedThisRound, currentTrick, trump) {
         const key = `${card.suit}|${rank}`;
         if (!playedSet.has(key) && !handSet.has(key)) outCount++;
       }
-      if (outCount <= 2 && v >= 8) danger += 5; // few cards left in suit, our card is high
+      if (outCount <= 2 && v >= 6) danger += 5; // few cards left, even mids are dangerous
+      if (outCount === 0 && v >= 3) danger += 8; // NO cards left in suit — ANY card wins!
 
       return danger;
     },
