@@ -261,13 +261,18 @@ export default function App() {
     socket.on("gameOver", (data) => {
       setScores(data.scores);
       setPhase("gameOver");
+      // Restore full game history for the final scoresheet
+      if (data.gameHistory && data.gameHistory.length > 0) {
+        setGameHistory(data.gameHistory);
+      }
       const finalRoundInfo = {
         tricksWon: data.tricksWon || {}, bids: data.bids || {}, scores: data.scores,
         roundNumber: "Final", cardsThisRound: roundData?.cardsThisRound || 0,
         trump: roundData?.trump || "Game Over", buriedCards: [], isFinal: true,
       };
       setRoundSummaryData(finalRoundInfo);
-      setTimeout(() => setShowRoundSummary(true), 2000);
+      // Show final scoresheet after a short delay (roundOver already showed the last round)
+      setTimeout(() => setShowRoundSummary(true), 3000);
     });
 
     socket.on("rejoinGame", (data) => {

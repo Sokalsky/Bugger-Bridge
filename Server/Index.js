@@ -233,6 +233,7 @@ function handleCardPlay(roomCode, room, playerId, card) {
           scores: room.scores,
           tricksWon: room.tricksWon,
           bids: room.bids,
+          gameHistory: room.gameHistory || [],
         });
         return true; // Game over
       }
@@ -1061,6 +1062,39 @@ app.delete("/api/game-state", async (req, res) => {
     }
     console.log("🗑️ All game states cleared");
     res.json({ success: true, message: "All game states cleared" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/cleanup-stats", async (req, res) => {
+  try {
+    const { query: dbQuery } = await import("./db.js");
+    // Delete all data from incomplete games (no finished_at)
+    const incomplete = await dbQuery(`SELECT id FROM games WHERE finished_at IS NULL`);
+    const deadIds = incomplete?.rows?.map(r => r.id) || [];
+    if (deadIds.length > 0) {
+      for (const gid of deadIds) {
+        await dbQuery(`DELETE FROM card_plays WHERE game_id = $1`, [gid]);
+        await dbQuery(`DELETE FROM trick_results WHERE game_id = $1`, [gid]);
+        await dbQuery(`DELETE FROM round_results WHERE game_id = $1`, [gid]);
+        await dbQuery(`DELETE FROM rounds WHERE game_id = $1`, [gid]);
+        await dbQuery(`DELETE FROM game_players WHERE game_id = $1`, [gid]);
+        await dbQuery(`DELETE FROM games WHERE id = $1`, [gid]);
+      }
+    }
+    // Recalculate player aggregate stats from actual completed data
+    await dbQuery(`
+      UPDATE players SET
+        games_played = COALESCE((SELECT COUNT(DISTINCT gp.game_id) FROM game_players gp JOIN games g ON gp.game_id = g.id WHERE gp.player_id = players.id AND g.finished_at IS NOT NULL), 0),
+        games_won = COALESCE((SELECT COUNT(*) FROM games g WHERE g.winner_id = players.id AND g.finished_at IS NOT NULL), 0),
+        total_rounds_played = COALESCE((SELECT COUNT(*) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.cumulative_score > 0), 0),
+        total_bids_made = COALESCE((SELECT COUNT(*) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.cumulative_score > 0), 0),
+        total_bids_met = COALESCE((SELECT COUNT(*) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.met_bid = true AND rr.cumulative_score > 0), 0),
+        total_tricks_won = COALESCE((SELECT SUM(rr.tricks_won) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.cumulative_score > 0), 0),
+        total_score = COALESCE((SELECT MAX(gp.final_score) FROM game_players gp JOIN games g ON gp.game_id = g.id WHERE gp.player_id = players.id AND g.finished_at IS NOT NULL), 0)
+    `);
+    res.json({ success: true, message: `Cleaned ${deadIds.length} dead games, recalculated all player stats` });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

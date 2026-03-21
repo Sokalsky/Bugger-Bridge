@@ -226,6 +226,15 @@ export async function logTrickComplete(roundId, gameId, trickNumber, trick, winn
 export async function logRoundEnd(roundId, gameId, bids, tricksWon, scores, players) {
   if (!roundId) return;
   try {
+    // Check if this round was already finalized (prevent double-counting)
+    const check = await query(
+      `SELECT cumulative_score FROM round_results WHERE round_id = $1 AND cumulative_score > 0 LIMIT 1`,
+      [roundId]
+    );
+    if (check?.rows?.length > 0) {
+      return; // Already finalized — skip
+    }
+
     for (const player of players) {
       const pid = player.id;
       const bid = bids[pid] || 0;
@@ -242,7 +251,7 @@ export async function logRoundEnd(roundId, gameId, bids, tricksWon, scores, play
         [tricks, metBid, roundScore, cumulativeScore, roundId, pid]
       );
 
-      // Update game_players round tracking
+      // Update game_players round tracking (only once per round)
       await query(
         `UPDATE game_players
          SET total_rounds = total_rounds + 1,
@@ -251,7 +260,7 @@ export async function logRoundEnd(roundId, gameId, bids, tricksWon, scores, play
         [metBid ? 1 : 0, gameId, pid]
       );
 
-      // Update player aggregate stats
+      // Update player aggregate stats (only once per round)
       await query(
         `UPDATE players
          SET total_rounds_played = total_rounds_played + 1,
