@@ -330,7 +330,7 @@ function processAIBid(roomCode, room) {
   // Helper to execute the bid with given learning data
   function executeBid(learningData) {
     const bid = calculateAIBid(hand, roundCards, trump, room.bids, room.players.length, isLastBidder, learningData);
-    const delay = 300 + Math.random() * 500;
+    const delay = 600 + Math.random() * 600;
 
     setTimeout(() => {
       if (!rooms[roomCode]) return;
@@ -412,7 +412,8 @@ function processAIPlay(roomCode, room) {
       console.error(`❌ AI Play: ${currentPlayer.name} selectAICard returned null! Hand:`, JSON.stringify(hand));
       return;
     }
-    const delay = 400 + Math.random() * 600;
+    // Longer delay so humans can follow the action (1.2–2s)
+    const delay = 1200 + Math.random() * 800;
     setTimeout(() => {
       if (!rooms[roomCode]) {
         console.error(`❌ AI Play: Room ${roomCode} no longer exists`);

@@ -207,7 +207,7 @@ export default function App() {
       trickClearTimerRef.current = setTimeout(() => {
         setPlayedCards([]); setLastWinner(null); setTrickWinnerName(null);
         trickClearTimerRef.current = null;
-      }, 1200);
+      }, 1800);
     });
 
     socket.on("handUpdate", (data) => {
@@ -421,11 +421,13 @@ export default function App() {
                 {playedCards.map((p, i) => {
                   const pos = getPlayerPosition(room?.players, myId, p.playerId);
                   const isW = lastWinner === p.playerId;
+                  const playerName = room?.players?.find(pl => pl.id === p.playerId)?.name || "";
                   return (
                     <div key={`${p.playerId}-${p.card.rank}-${p.card.suit}`}
                       className={`trick-slot trick-from-${pos} ${isW ? "trick-winner" : ""}`}
                       style={{ animationDelay: `${i * 0.07}s` }}>
                       <img src={getCardImage(p.card)} alt={`${p.card.rank} ${p.card.suit}`} draggable={false} />
+                      <div className="trick-label">{p.playerId === myId ? "You" : playerName}</div>
                     </div>
                   );
                 })}

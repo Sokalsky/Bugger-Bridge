@@ -496,11 +496,10 @@ body {
   font-size: 0.95rem; color: var(--text-dim); font-weight: 400;
 }
 
-/* Trick cards */
+/* Trick cards — positioned by player */
 .trick-pile {
   position: relative;
-  display: flex; gap: 8px; align-items: center; justify-content: center;
-  flex-wrap: wrap;
+  width: 240px; height: 200px;
 }
 
 .trick-winner-toast {
@@ -511,6 +510,7 @@ body {
   white-space: nowrap;
   border: 1px solid rgba(62, 207, 142, 0.3);
   animation: toastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 10;
 }
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
@@ -518,8 +518,26 @@ body {
 }
 
 .trick-slot {
-  width: 80px;
-  animation: trickDeal 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  width: 72px;
+  position: absolute;
+  animation: trickDeal 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+/* Position each card near its player's side */
+.trick-slot.trick-from-bottom {
+  bottom: 0; left: 50%; transform: translateX(-50%);
+  animation-name: trickFromBottom;
+}
+.trick-slot.trick-from-top {
+  top: 0; left: 50%; transform: translateX(-50%);
+  animation-name: trickFromTop;
+}
+.trick-slot.trick-from-left {
+  left: 0; top: 50%; transform: translateY(-50%);
+  animation-name: trickFromLeft;
+}
+.trick-slot.trick-from-right {
+  right: 0; top: 50%; transform: translateY(-50%);
+  animation-name: trickFromRight;
 }
 .trick-slot img {
   width: 100%; height: auto;
@@ -533,10 +551,24 @@ body {
 .trick-from-left { animation-name: trickFromLeft; }
 .trick-from-right { animation-name: trickFromRight; }
 
-@keyframes trickFromBottom { from { opacity: 0; transform: translateY(60px) scale(0.7); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes trickFromTop { from { opacity: 0; transform: translateY(-60px) scale(0.7); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes trickFromLeft { from { opacity: 0; transform: translateX(-60px) scale(0.7); } to { opacity: 1; transform: translateX(0) scale(1); } }
-@keyframes trickFromRight { from { opacity: 0; transform: translateX(60px) scale(0.7); } to { opacity: 1; transform: translateX(0) scale(1); } }
+@keyframes trickFromBottom { from { opacity: 0; transform: translateX(-50%) translateY(80px) scale(0.6); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
+@keyframes trickFromTop { from { opacity: 0; transform: translateX(-50%) translateY(-80px) scale(0.6); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
+@keyframes trickFromLeft { from { opacity: 0; transform: translateY(-50%) translateX(-80px) scale(0.6); } to { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); } }
+@keyframes trickFromRight { from { opacity: 0; transform: translateY(-50%) translateX(80px) scale(0.6); } to { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); } }
+
+.trick-label {
+  text-align: center;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-top: 3px;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
+.trick-winner .trick-label {
+  color: var(--accent);
+}
 
 .trick-winner img {
   box-shadow:
