@@ -26,11 +26,20 @@ export default function Scoreboard({ room, myId, gameHistory, roundSummaryData, 
               <tr>
                 <th className="th-sm">Cards</th>
                 <th className="th-sm">Trump</th>
-                {room?.players.map((pl) => (
-                  <th key={pl.id} colSpan={3} className="th-player">
-                    {pl.name}{pl.id === myId ? " (you)" : ""}
-                  </th>
-                ))}
+                {(() => {
+                  const scores = roundSummaryData.scores || {};
+                  const maxScore = Math.max(...Object.values(scores), 0);
+                  const leaders = Object.keys(scores).filter(id => scores[id] === maxScore);
+                  return room?.players.map((pl) => {
+                    const isLeader = leaders.includes(pl.id) && maxScore > 0;
+                    const score = scores[pl.id] || 0;
+                    return (
+                      <th key={pl.id} colSpan={3} className="th-player" style={{ color: isLeader ? "#f0c040" : "#ffffff" }}>
+                        {pl.name}{pl.id === myId ? " (you)" : ""} ({score})
+                      </th>
+                    );
+                  });
+                })()}
               </tr>
               <tr className="sub-hdr">
                 <th /><th />
