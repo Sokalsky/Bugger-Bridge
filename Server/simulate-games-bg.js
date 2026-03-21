@@ -45,8 +45,37 @@ function getBiddingOrder(players, ri) {
 async function simulateOneGame(gameNum, players) {
   const roomCode = `SIM${gameNum}_${Date.now()}`;
   const roundSequence = buildRoundSequence(players.length);
-  const gameId = await logGameStart(roomCode, players);
-  if (!gameId) return null;
+
+  // Use direct pool query to avoid the error-swallowing wrapper
+  const { getPool } = await import("./db.js");
+  const pool = getPool();
+  if (!pool) return { error: "no pool" };
+
+  // Ensure players
+  for (const p of players) {
+    await pool.query(
+      `INSERT INTO players (id, name, is_ai, last_seen_at) VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, last_seen_at = NOW()`,
+      [p.id, p.name, p.isAI || false]
+    );
+  }
+
+  // Create game
+  const gameResult = await pool.query(
+    `INSERT INTO games (room_code, player_count, total_rounds, started_at)
+     VALUES ($1, $2, $3, NOW()) RETURNING id`,
+    [roomCode, players.length, 0]
+  );
+  const gameId = gameResult.rows[0].id;
+
+  // Create game_players
+  for (let i = 0; i < players.length; i++) {
+    await pool.query(
+      `INSERT INTO game_players (game_id, player_id, player_name, is_ai, seat_position)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [gameId, players[i].id, players[i].name, players[i].isAI || false, i]
+    );
+  }
 
   const scores = Object.fromEntries(players.map(p => [p.id, 0]));
   let totalBidsMet = 0, totalBids = 0;
@@ -58,7 +87,12 @@ async function simulateOneGame(gameNum, players) {
     for (const pid in hands) hands[pid] = sortHand(hands[pid]);
 
     const dealerIndex = ri % players.length;
-    const roundId = await logRoundStart(gameId, ri, cardsPerPlayer, trump, dealerIndex, hands, buriedCards);
+    const roundResult = await pool.query(
+      `INSERT INTO rounds (game_id, round_index, cards_per_player, trump_suit, dealer_index, buried_cards)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [gameId, ri, cardsPerPlayer, trump, dealerIndex, JSON.stringify(buriedCards || [])]
+    );
+    const roundId = roundResult.rows[0].id;
 
     // Bidding
     const biddingOrder = getBiddingOrder(players, ri);
