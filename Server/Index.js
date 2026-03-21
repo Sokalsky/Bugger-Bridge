@@ -305,74 +305,57 @@ function processAIBid(roomCode, room) {
   const hand = room.hands[currentBidderId] || [];
   const isLastBidder = room.currentBidIndex === room.biddingOrder.length - 1;
 
-  // Fetch learning data then bid
-  getBidLearningData(hand, roundCards, trump).then(learningData => {
+  // Helper to execute the bid with given learning data
+  function executeBid(learningData) {
     const bid = calculateAIBid(hand, roundCards, trump, room.bids, room.players.length, isLastBidder, learningData);
+    const delay = 300 + Math.random() * 500;
 
-    // Simulate AI thinking delay (300-800ms)
     setTimeout(() => {
-    // Re-check room state in case it changed
-    if (!rooms[roomCode] || rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex] !== currentBidderId) return;
-    
-    rooms[roomCode].bids[currentBidderId] = bid;
-    const allBidsIn = Object.keys(rooms[roomCode].bids).length === rooms[roomCode].players.length;
-    io.to(roomCode).emit("biddingUpdate", rooms[roomCode].bids);
+      if (!rooms[roomCode]) return;
+      if (rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex] !== currentBidderId) return;
 
-    // ===== DATABASE: Log AI bid =====
-    logBid(
-      rooms[roomCode].dbRoundId, rooms[roomCode].dbGameId, currentBidderId, bid,
-      rooms[roomCode].currentBidIndex + 1, hand, roundCards, trump, true
-    ).catch(e => console.error("DB AI bid log error:", e.message));
-    
-    if (allBidsIn) {
-      io.to(roomCode).emit("biddingComplete", { bids: rooms[roomCode].bids });
-      rooms[roomCode].playOrder = [...rooms[roomCode].biddingOrder];
-      rooms[roomCode].currentTurnIndex = 0;
-      rooms[roomCode].currentTrick = [];
-      rooms[roomCode].leadSuit = null;
-      
-      io.to(roomCode).emit("startPlay", {
-        trump: getTrump(rooms[roomCode].trumpIndex % 5),
-        currentPlayer: rooms[roomCode].playOrder[0],
-      });
-      
-      // Check if first player is AI
-      processAIPlay(roomCode, rooms[roomCode]);
-    } else {
-      rooms[roomCode].currentBidIndex = (rooms[roomCode].currentBidIndex + 1) % rooms[roomCode].players.length;
-      const nextBidder = rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex];
-      io.to(roomCode).emit("biddingTurn", { currentBidder: nextBidder });
-      
-      // Check if next bidder is AI
-      processAIBid(roomCode, rooms[roomCode]);
-    }
-    }, 300 + Math.random() * 500);
-  }).catch(err => {
-    // Learning data fetch failed — fall back to pure heuristics
-    console.error("❌ AI bid learning fetch error:", err.message);
-    const bid = calculateAIBid(hand, roundCards, trump, room.bids, room.players.length, isLastBidder, null);
-    setTimeout(() => {
-      if (!rooms[roomCode] || rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex] !== currentBidderId) return;
       rooms[roomCode].bids[currentBidderId] = bid;
       const allBidsIn = Object.keys(rooms[roomCode].bids).length === rooms[roomCode].players.length;
       io.to(roomCode).emit("biddingUpdate", rooms[roomCode].bids);
-      logBid(rooms[roomCode].dbRoundId, rooms[roomCode].dbGameId, currentBidderId, bid,
+
+      // Database log
+      logBid(
+        rooms[roomCode].dbRoundId, rooms[roomCode].dbGameId, currentBidderId, bid,
         rooms[roomCode].currentBidIndex + 1, hand, roundCards, trump, true
-      ).catch(() => {});
+      ).catch(e => console.error("DB AI bid log error:", e.message));
+
       if (allBidsIn) {
         io.to(roomCode).emit("biddingComplete", { bids: rooms[roomCode].bids });
         rooms[roomCode].playOrder = [...rooms[roomCode].biddingOrder];
         rooms[roomCode].currentTurnIndex = 0;
         rooms[roomCode].currentTrick = [];
         rooms[roomCode].leadSuit = null;
-        io.to(roomCode).emit("startPlay", { trump: getTrump(rooms[roomCode].trumpIndex % 5), currentPlayer: rooms[roomCode].playOrder[0] });
+        io.to(roomCode).emit("startPlay", {
+          trump: getTrump(rooms[roomCode].trumpIndex % 5),
+          currentPlayer: rooms[roomCode].playOrder[0],
+        });
         processAIPlay(roomCode, rooms[roomCode]);
       } else {
         rooms[roomCode].currentBidIndex = (rooms[roomCode].currentBidIndex + 1) % rooms[roomCode].players.length;
-        io.to(roomCode).emit("biddingTurn", { currentBidder: rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex] });
+        const nextBidder = rooms[roomCode].biddingOrder[rooms[roomCode].currentBidIndex];
+        io.to(roomCode).emit("biddingTurn", { currentBidder: nextBidder });
         processAIBid(roomCode, rooms[roomCode]);
       }
-    }, 300 + Math.random() * 500);
+    }, delay);
+  }
+
+  // Fetch learning data with timeout
+  const learningTimeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("Learning query timeout")), 2000)
+  );
+
+  Promise.race([
+    getBidLearningData(hand, roundCards, trump),
+    learningTimeout
+  ]).then(learningData => {
+    executeBid(learningData);
+  }).catch(() => {
+    executeBid(null);
   });
 }
 
@@ -391,28 +374,32 @@ function processAIPlay(roomCode, room) {
   const aiTricksWon = room.tricksWon[currentPlayerId] || 0;
   const cardsPerPlayer = room.roundSequence[room.roundIndex];
 
-  // Fetch learning data then play
-  getPlayLearningData(hand, room.currentTrick, trump, aiBid, aiTricksWon, cardsPerPlayer).then(learningData => {
-    const card = selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, learningData);
+  // Helper to execute the AI play with a given card
+  function executePlay(card) {
     if (!card) return;
-
-    // Simulate AI thinking delay (400-1000ms)
+    const delay = 400 + Math.random() * 600;
     setTimeout(() => {
-      if (!rooms[roomCode] || rooms[roomCode].playOrder[rooms[roomCode].currentTurnIndex] !== currentPlayerId) return;
+      if (!rooms[roomCode]) return;
       const currentRoom = rooms[roomCode];
-      const expectedPlayer = currentRoom.playOrder[currentRoom.currentTurnIndex];
-      if (currentPlayerId !== expectedPlayer) return;
+      // Re-verify it's still this AI's turn
+      if (currentRoom.playOrder[currentRoom.currentTurnIndex] !== currentPlayerId) return;
       handleCardPlay(roomCode, currentRoom, currentPlayerId, card);
-    }, 400 + Math.random() * 600);
-  }).catch(err => {
-    // Learning fetch failed — fall back to heuristics
-    console.error("❌ AI play learning fetch error:", err.message);
-    const card = selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, null);
-    if (!card) return;
-    setTimeout(() => {
-      if (!rooms[roomCode] || rooms[roomCode].playOrder[rooms[roomCode].currentTurnIndex] !== currentPlayerId) return;
-      handleCardPlay(roomCode, rooms[roomCode], currentPlayerId, card);
-    }, 400 + Math.random() * 600);
+    }, delay);
+  }
+
+  // Try to fetch learning data with a timeout so it never stalls
+  const learningTimeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("Learning query timeout")), 2000)
+  );
+
+  Promise.race([
+    getPlayLearningData(hand, room.currentTrick, trump, aiBid, aiTricksWon, cardsPerPlayer),
+    learningTimeout
+  ]).then(learningData => {
+    executePlay(selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, learningData));
+  }).catch(() => {
+    // Learning failed or timed out — use heuristics
+    executePlay(selectAICard(hand, room.currentTrick, trump, aiBid, aiTricksWon, null));
   });
 }
 
