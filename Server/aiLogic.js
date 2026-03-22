@@ -518,6 +518,38 @@ function safestDiscard(cards, currentTrick, trump, cardTracker) {
 }
 
 /**
+ * Find a low card to lead that will "flush out" a higher card,
+ * setting up our high-but-not-highest card as a future guaranteed winner.
+ * E.g. we have K♥ and 5♥, Ace of Hearts is still out → lead 5♥ to draw the Ace.
+ */
+function findFlushPlay(hand, nonTrumpCards, cardTracker) {
+  for (const suit of ["Hearts", "Diamonds", "Clubs", "Spades"]) {
+    const cardsInSuit = nonTrumpCards.filter(c => c.suit === suit);
+    if (cardsInSuit.length < 2) continue; // need at least a high + a low
+
+    const sorted = sortHighToLow(cardsInSuit);
+    const highCard = sorted[0]; // our best card in this suit
+    const highVal = RANK_VALUES[highCard.rank];
+
+    // Is our best card high but NOT the highest remaining?
+    if (highVal >= 10 && !cardTracker.isHighestInSuit(highCard)) {
+      // There's a higher card still out — we can flush it
+      const stillOut = cardTracker.stillOut[suit] || [];
+      const higherOut = stillOut.filter(r => RANK_VALUES[r] > highVal);
+
+      // Only worth flushing if just 1 card is higher (if 2+ are higher, flushing
+      // one still leaves another, so our card still isn't guaranteed)
+      if (higherOut.length === 1) {
+        // Lead our lowest card in this suit to draw out the higher one
+        const lowCard = sorted[sorted.length - 1]; // lowest in suit
+        if (lowCard !== highCard) return lowCard; // don't lead the card we're protecting
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Choose a card when leading a trick — with pacing, tracking, and opponent awareness.
  */
 function selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, cardTracker, opponents) {
@@ -552,23 +584,26 @@ function selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, ca
 
   if (canBeSelective) {
     // Selective: we have time — lead guaranteed winners, save questionable ones
-    // Find cards that are now the highest in their suit (safe wins)
     const guaranteedWinners = hand.filter(c => cardTracker.isHighestInSuit(c));
     if (guaranteedWinners.length > 0) {
-      // Lead the guaranteed winner from the suit with fewest cards still out
-      // (fewer cards out = less risk of someone being void and trumping)
       guaranteedWinners.sort((a, b) => cardTracker.countOutInSuit(a.suit) - cardTracker.countOutInSuit(b.suit));
       return guaranteedWinners[0];
     }
 
-    // No guaranteed winners — lead from our longest non-trump suit to establish it
+    // === FLUSH OUT HIGH CARDS ===
+    // If we have a high-but-not-highest card (K when A is out, Q when K/A out),
+    // lead a LOW card in that suit to draw out the higher card. Then our high
+    // card becomes a guaranteed winner next time.
+    const flushCandidate = findFlushPlay(hand, nonTrumpCards, cardTracker);
+    if (flushCandidate) return flushCandidate;
+
+    // No flush targets — lead from our longest non-trump suit to establish it
     const suitCounts = {};
     for (const c of nonTrumpCards) {
       suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
     }
     const longestSuit = Object.entries(suitCounts).sort(([, a], [, b]) => b - a)[0];
     if (longestSuit && longestSuit[1] >= 3) {
-      // Lead high from our long suit to start exhausting opponents
       const suitCards = nonTrumpCards.filter(c => c.suit === longestSuit[0]);
       return sortHighToLow(suitCards)[0];
     }
@@ -579,9 +614,13 @@ function selectLead(hand, trump, wantToWin, metBid, isUrgent, canBeSelective, ca
   }
 
   // Normal need: lead strong but not desperate
-  // Prefer guaranteed winners, then highest non-trump, then trump
   const guaranteed = hand.filter(c => cardTracker.isHighestInSuit(c));
   if (guaranteed.length > 0) return guaranteed[0];
+
+  // Try to flush out high cards before leading our best
+  const flushCandidate = findFlushPlay(hand, nonTrumpCards, cardTracker);
+  if (flushCandidate) return flushCandidate;
+
   if (nonTrumpCards.length > 0) return sortHighToLow(nonTrumpCards)[0];
   return sortHighToLow(trumpCards.length > 0 ? trumpCards : hand)[0];
 }
