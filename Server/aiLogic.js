@@ -221,13 +221,22 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
   // - Overbid: you get fewer points AND can't do anything about it
   // So when uncertain (fractional estimate), round DOWN slightly
   // Randomness: 0 or +1 only (never -1), but with underbid bias
-  const r = Math.random();
-  let randomAdjust;
-  if (r < 0.6) randomAdjust = 0;       // 60% — stay at estimate
-  else if (r < 0.9) randomAdjust = -1;  // 30% — underbid by 1 (safer)
-  else randomAdjust = 1;                // 10% — overbid by 1 (aggressive)
+  // Only apply randomness when there's genuine uncertainty.
+  // Don't randomize when the estimate is based on near-certain cards
+  // (e.g. Ace of trump in a 1-card round = guaranteed winner)
+  let finalBid = estimatedTricks;
+  const preRoundEstimate = estimatedTricks; // save for last-bidder logic
 
-  let finalBid = Math.max(0, Math.min(roundCards, estimatedTricks + randomAdjust));
+  if (roundCards > 1 || estimatedTricks === 0) {
+    // Multi-card rounds or zero bids: apply randomness
+    const r = Math.random();
+    let randomAdjust;
+    if (r < 0.6) randomAdjust = 0;       // 60% — stay at estimate
+    else if (r < 0.9) randomAdjust = -1;  // 30% — underbid by 1 (safer)
+    else randomAdjust = 1;                // 10% — overbid by 1 (aggressive)
+    finalBid = Math.max(0, Math.min(roundCards, estimatedTricks + randomAdjust));
+  }
+  // For 1-card rounds with a positive estimate: bid exactly what we calculated (no randomness)
 
   // ONLY the last bidder is restricted from making total = roundCards
   if (isLastBidder) {
