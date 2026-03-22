@@ -598,14 +598,31 @@ function selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantTo
     return safestDiscard(followSuitCards, currentTrick, trump, cardTracker);
   }
 
-  if (wantToWin && !hasTrumpInTrick) {
-    // Try to win with cheapest card that beats the current winner
+  if (wantToWin) {
+    if (hasTrumpInTrick) {
+      // Trick is already trumped — we CAN'T win by following suit.
+      // Don't waste high cards we planned to win with later.
+      // Dump the most "dangerous" mid-range card to get rid of it,
+      // while saving our high cards (future winners) and low cards (safe losers).
+      const sorted = [...followSuitCards].sort((a, b) => {
+        // Prefer to throw: mid-range cards we don't want to keep
+        // Keep: high cards (future winners) and very low cards (safe losers)
+        const aVal = RANK_VALUES[a.rank];
+        const bVal = RANK_VALUES[b.rank];
+        const aDanger = (aVal >= 6 && aVal <= 9) ? 10 : (aVal >= 10 ? -5 : -3);
+        const bDanger = (bVal >= 6 && bVal <= 9) ? 10 : (bVal >= 10 ? -5 : -3);
+        return bDanger - aDanger; // highest danger first
+      });
+      return sorted[0];
+    }
+
+    // No trump in trick — try to win with cheapest card that beats the current winner
     const winningCards = followSuitCards
       .filter(c => {
         if (currentWinner.card.suit === leadSuit) {
           return RANK_VALUES[c.rank] > RANK_VALUES[currentWinner.card.rank];
         }
-        return true; // current winner is off-suit/trump, any follow-suit might not win
+        return true;
       })
       .sort((a, b) => RANK_VALUES[a.rank] - RANK_VALUES[b.rank]);
 
@@ -621,8 +638,18 @@ function selectFollowSuit(followSuitCards, currentTrick, trump, leadSuit, wantTo
     }
   }
 
-  // Can't win or don't want to — play lowest (save higher cards for later)
-  return sortLowToHigh(followSuitCards)[0];
+  // Can't win — same logic as trumped trick: dump mid-range, save highs and lows
+  if (followSuitCards.length > 1) {
+    const sorted = [...followSuitCards].sort((a, b) => {
+      const aVal = RANK_VALUES[a.rank];
+      const bVal = RANK_VALUES[b.rank];
+      const aDanger = (aVal >= 6 && aVal <= 9) ? 10 : (aVal >= 10 ? -5 : -3);
+      const bDanger = (bVal >= 6 && bVal <= 9) ? 10 : (bVal >= 10 ? -5 : -3);
+      return bDanger - aDanger;
+    });
+    return sorted[0];
+  }
+  return followSuitCards[0];
 }
 
 /**
