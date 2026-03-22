@@ -144,23 +144,53 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
     estimatedTricks = Math.max(0, Math.min(roundCards, estimatedTricks));
   }
 
-  // Add some randomness for variety (±1)
-  const randomAdjust = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
+  // ===== UNCLAIMED TRICKS AWARENESS =====
+  // If previous bidders bid low, there are "unclaimed" tricks that have to go somewhere.
+  // Later bidders should nudge upward if the total is suspiciously low.
+  const bidsSoFar = Object.values(existingBids).reduce((sum, bid) => sum + bid, 0);
+  const biddersRemaining = playerCount - Object.keys(existingBids).length; // including this bidder
+  if (biddersRemaining > 0 && biddersRemaining <= 2) {
+    // We're one of the last to bid — check if total is low
+    const expectedRemainingBids = (roundCards - bidsSoFar) / biddersRemaining;
+    if (estimatedTricks < expectedRemainingBids - 0.5) {
+      // Total bids are trending low — nudge up slightly
+      estimatedTricks = Math.round((estimatedTricks + expectedRemainingBids) / 2);
+      estimatedTricks = Math.max(0, Math.min(roundCards, estimatedTricks));
+    }
+  }
+
+  // ===== UNDERBID PREFERENCE =====
+  // It's slightly better to underbid than overbid:
+  // - Underbid: you get more points (extra tricks) AND you can try to steal
+  //   tricks from opponents to mess up their bids
+  // - Overbid: you get fewer points AND can't do anything about it
+  // So when uncertain (fractional estimate), round DOWN slightly
+  // Randomness: 0 or +1 only (never -1), but with underbid bias
+  const r = Math.random();
+  let randomAdjust;
+  if (r < 0.6) randomAdjust = 0;       // 60% — stay at estimate
+  else if (r < 0.9) randomAdjust = -1;  // 30% — underbid by 1 (safer)
+  else randomAdjust = 1;                // 10% — overbid by 1 (aggressive)
+
   let finalBid = Math.max(0, Math.min(roundCards, estimatedTricks + randomAdjust));
 
   // ONLY the last bidder is restricted from making total = roundCards
   if (isLastBidder) {
-    const bidsSoFar = Object.values(existingBids).reduce((sum, bid) => sum + bid, 0);
     if (bidsSoFar + finalBid === roundCards) {
-      // Try nearby bids first (prefer closest to our estimate)
+      // Try nearby bids — prefer underbidding when forced to adjust
       const candidates = [];
       for (let b = 0; b <= roundCards; b++) {
         if (bidsSoFar + b !== roundCards) {
           candidates.push(b);
         }
       }
-      // Pick the candidate closest to our original estimate
-      candidates.sort((a, b) => Math.abs(a - estimatedTricks) - Math.abs(b - estimatedTricks));
+      // Sort by closeness to estimate, but prefer lower bids on ties
+      candidates.sort((a, b) => {
+        const distA = Math.abs(a - estimatedTricks);
+        const distB = Math.abs(b - estimatedTricks);
+        if (distA !== distB) return distA - distB;
+        return a - b; // prefer lower bid on tie
+      });
       finalBid = candidates[0] ?? 0;
     }
   }
