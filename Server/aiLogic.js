@@ -120,26 +120,46 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
     const isLeading = bidPosition === 0;
 
     if (roundCards === 1) {
-      // ===== 1-CARD ROUND: near-deterministic bidding =====
-      // Statistics for 4 players:
-      // - Leader ALWAYS has >50% chance (sets the suit). Bid 1.
-      // - Middle positions have ~15-25% chance. Bid 0.
-      // - Last bidder is constrained by bugger rule.
+      // ===== 1-CARD ROUND: position + card aware bidding =====
       const card = hand[0];
       const v = RANK_VALUES[card.rank] || 0;
       const isTrump = card.suit === trump && trump !== "No Trump";
+      const someoneAlreadyBidOne = Object.values(existingBids).some(b => b >= 1);
 
-      if (isLeading) {
-        // Leader always bids 1 — you set the suit, >50% win rate even with a 2
-        estimatedTricks = 1;
-      } else if (trump !== "No Trump" && isTrump) {
-        // Holding trump in a trump round, not leading — still strong
-        // Trump beats any non-trump lead. ~75% chance the leader leads non-trump.
-        estimatedTricks = 1;
+      if (trump === "No Trump") {
+        // NO TRUMP 1-CARD: leader bids 1, everyone else bids 0
+        estimatedTricks = isLeading ? 1 : 0;
       } else {
-        // Not leading, not trump (or No Trump middle position)
-        // Very low chance of winning — need leader to pick your suit AND you beat them
-        estimatedTricks = 0;
+        // TRUMP 1-CARD ROUND
+        if (isLeading) {
+          if (isTrump) {
+            // Leading with trump — very strong, bid 1
+            estimatedTricks = 1;
+          } else if (v >= 12) {
+            // Leading with Ace/King off-suit — decent chance (~40-50% nobody has trump)
+            estimatedTricks = 1;
+          } else {
+            // Leading with low off-suit — risky, someone likely has trump
+            estimatedTricks = 0;
+          }
+        } else if (isTrump) {
+          // Not leading, but holding trump
+          if (!someoneAlreadyBidOne) {
+            // Nobody bid 1 yet — we're likely the strongest hand, bid 1
+            estimatedTricks = 1;
+          } else if (v >= 9) {
+            // Someone already bid 1, but we have high trump (9+) — still bid 1
+            // We'll likely beat their non-trump lead or their lower trump
+            estimatedTricks = 1;
+          } else {
+            // Someone already bid 1 and we have low trump (2-8)
+            // They might have higher trump or a strong lead — back off
+            estimatedTricks = 0;
+          }
+        } else {
+          // Not leading, not trump — very weak, bid 0
+          estimatedTricks = 0;
+        }
       }
     } else {
       // 2-3 card rounds: use probability-based approach
