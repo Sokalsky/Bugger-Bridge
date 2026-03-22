@@ -192,6 +192,10 @@ async function runMigrations(p) {
     ON card_plays(card_suit, card_rank, cards_per_player, trump_suit, play_position)
   `);
 
+  // Add hand context columns to card_plays (safe to run multiple times)
+  await p.query(`ALTER TABLE card_plays ADD COLUMN IF NOT EXISTS hand_at_play JSONB`);
+  await p.query(`ALTER TABLE card_plays ADD COLUMN IF NOT EXISTS trick_state JSONB`);
+
   // Win rate by context
   await p.query(`
     CREATE INDEX IF NOT EXISTS idx_card_plays_winrate

@@ -181,13 +181,16 @@ export async function logCardPlay(roundId, gameId, trickNumber, playPosition, pl
          (round_id, game_id, trick_number, play_position, player_id,
           card_suit, card_rank, trump_suit, lead_suit,
           cards_per_player, cards_remaining, player_bid,
-          player_tricks_so_far, tricks_needed, is_ai)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+          player_tricks_so_far, tricks_needed, is_ai,
+          hand_at_play, trick_state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         roundId, gameId, trickNumber, playPosition, playerId,
         card.suit, card.rank, context.trump, context.leadSuit || null,
         context.cardsPerPlayer, context.cardsRemaining, context.playerBid,
-        context.playerTricksSoFar, context.tricksNeeded, context.isAI || false
+        context.playerTricksSoFar, context.tricksNeeded, context.isAI || false,
+        JSON.stringify(context.handAtPlay || null),
+        JSON.stringify(context.trickState || null)
       ]
     );
   } catch (err) {

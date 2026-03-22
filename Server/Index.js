@@ -135,6 +135,10 @@ function handleCardPlay(roomCode, room, playerId, card) {
     return false; // Invalid play
   }
 
+  // Snapshot hand and trick BEFORE modifying state (for logging context)
+  const handSnapshot = playerHand.map(c => ({ suit: c.suit, rank: c.rank }));
+  const trickSnapshot = room.currentTrick.map(p => ({ playerId: p.playerId, card: { suit: p.card.suit, rank: p.card.rank } }));
+
   room.hands[playerId] = playerHand.filter(
     (c) => !(c.rank === card.rank && c.suit === card.suit)
   );
@@ -144,7 +148,7 @@ function handleCardPlay(roomCode, room, playerId, card) {
   room.playedCardsThisRound.push(card);
   if (room.currentTrick.length === 1) room.leadSuit = card.suit;
 
-  // ===== DATABASE: Log card play =====
+  // ===== DATABASE: Log card play with full context =====
   const playingPlayer = room.players.find(p => p.id === playerId);
   const playerBid = room.bids[playerId] || 0;
   const playerTricksSoFar = room.tricksWon[playerId] || 0;
@@ -160,6 +164,8 @@ function handleCardPlay(roomCode, room, playerId, card) {
       playerTricksSoFar,
       tricksNeeded: playerBid - playerTricksSoFar,
       isAI: playingPlayer?.isAI || false,
+      handAtPlay: handSnapshot,    // full hand INCLUDING the card being played
+      trickState: trickSnapshot,   // cards already played in this trick BEFORE this play
     }
   ).catch(e => console.error("DB card log error:", e.message));
 
