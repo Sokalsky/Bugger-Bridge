@@ -1110,6 +1110,105 @@ app.post("/api/delete-sim-games", async (req, res) => {
   }
 });
 
+app.post("/api/deduplicate", async (req, res) => {
+  try {
+    const { query: dbQuery } = await import("./db.js");
+
+    // Find and delete duplicate round_results (keep lowest id per round_id + player_id)
+    const dupeResult = await dbQuery(`
+      DELETE FROM round_results WHERE id NOT IN (
+        SELECT MIN(id) FROM round_results GROUP BY round_id, player_id
+      )
+    `);
+    const dupeBids = dupeResult?.rowCount || 0;
+
+    // Same for card_plays (keep lowest id per round_id + trick_number + player_id)
+    const dupeCards = await dbQuery(`
+      DELETE FROM card_plays WHERE id NOT IN (
+        SELECT MIN(id) FROM card_plays GROUP BY round_id, trick_number, player_id
+      )
+    `);
+    const dupeCardCount = dupeCards?.rowCount || 0;
+
+    // Same for trick_results (keep lowest id per round_id + trick_number)
+    const dupeTricks = await dbQuery(`
+      DELETE FROM trick_results WHERE id NOT IN (
+        SELECT MIN(id) FROM trick_results GROUP BY round_id, trick_number
+      )
+    `);
+    const dupeTrickCount = dupeTricks?.rowCount || 0;
+
+    // Same for rounds (keep lowest id per game_id + round_index)
+    const dupeRounds = await dbQuery(`
+      DELETE FROM rounds WHERE id NOT IN (
+        SELECT MIN(id) FROM rounds GROUP BY game_id, round_index
+      )
+    `);
+    const dupeRoundCount = dupeRounds?.rowCount || 0;
+
+    // Now recalculate game_players from the clean round_results
+    const games = await dbQuery(`SELECT id FROM games WHERE finished_at IS NOT NULL`);
+    for (const game of (games?.rows || [])) {
+      const gid = game.id;
+      // Get actual round count and bid accuracy per player from clean data
+      const playerStats = await dbQuery(`
+        SELECT player_id,
+          COUNT(*) as rounds_played,
+          COUNT(CASE WHEN met_bid THEN 1 END) as rounds_met
+        FROM round_results
+        WHERE game_id = $1 AND cumulative_score > 0
+        GROUP BY player_id
+      `, [gid]);
+
+      for (const ps of (playerStats?.rows || [])) {
+        await dbQuery(`
+          UPDATE game_players
+          SET total_rounds = $1, rounds_bid_met = $2
+          WHERE game_id = $3 AND player_id = $4
+        `, [parseInt(ps.rounds_played), parseInt(ps.rounds_met), gid, ps.player_id]);
+      }
+
+      // Recalculate final_score from actual round scores
+      const scoreData = await dbQuery(`
+        SELECT player_id, SUM(round_score) as total
+        FROM round_results
+        WHERE game_id = $1 AND cumulative_score > 0
+        GROUP BY player_id
+      `, [gid]);
+
+      for (const sd of (scoreData?.rows || [])) {
+        await dbQuery(`
+          UPDATE game_players SET final_score = $1
+          WHERE game_id = $2 AND player_id = $3
+        `, [parseInt(sd.total), gid, sd.player_id]);
+      }
+
+      // Update games.total_rounds
+      const rc = await dbQuery(`SELECT COUNT(DISTINCT round_index) as cnt FROM rounds WHERE game_id = $1`, [gid]);
+      await dbQuery(`UPDATE games SET total_rounds = $1 WHERE id = $2`, [parseInt(rc?.rows?.[0]?.cnt || 0), gid]);
+    }
+
+    // Recalculate player aggregate stats
+    await dbQuery(`
+      UPDATE players SET
+        games_played = COALESCE((SELECT COUNT(DISTINCT gp.game_id) FROM game_players gp JOIN games g ON gp.game_id = g.id WHERE gp.player_id = players.id AND g.finished_at IS NOT NULL), 0),
+        games_won = COALESCE((SELECT COUNT(*) FROM games g WHERE g.winner_id = players.id AND g.finished_at IS NOT NULL), 0),
+        total_rounds_played = COALESCE((SELECT COUNT(*) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.cumulative_score > 0), 0),
+        total_bids_made = COALESCE((SELECT COUNT(*) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.cumulative_score > 0), 0),
+        total_bids_met = COALESCE((SELECT COUNT(*) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.met_bid = true AND rr.cumulative_score > 0), 0),
+        total_tricks_won = COALESCE((SELECT SUM(rr.tricks_won) FROM round_results rr JOIN games g ON rr.game_id = g.id WHERE rr.player_id = players.id AND g.finished_at IS NOT NULL AND rr.cumulative_score > 0), 0),
+        total_score = COALESCE((SELECT SUM(gp.final_score) FROM game_players gp JOIN games g ON gp.game_id = g.id WHERE gp.player_id = players.id AND g.finished_at IS NOT NULL), 0)
+    `);
+
+    res.json({
+      success: true,
+      message: `Deduplicated: ${dupeBids} round_results, ${dupeCardCount} card_plays, ${dupeTrickCount} trick_results, ${dupeRoundCount} rounds. Recalculated all scores.`
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/api/cleanup-stats", async (req, res) => {
   try {
     const { query: dbQuery } = await import("./db.js");
