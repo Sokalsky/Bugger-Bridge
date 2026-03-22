@@ -206,13 +206,12 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
   // ===== UNCLAIMED TRICKS AWARENESS =====
   // If previous bidders bid low, there are "unclaimed" tricks that have to go somewhere.
   // Later bidders should nudge upward if the total is suspiciously low.
+  // Skip for 1-card rounds — those are deterministic and shouldn't be nudged.
   const bidsSoFar = Object.values(existingBids).reduce((sum, bid) => sum + bid, 0);
-  const biddersRemaining = playerCount - Object.keys(existingBids).length; // including this bidder
-  if (biddersRemaining > 0 && biddersRemaining <= 2) {
-    // We're one of the last to bid — check if total is low
+  const biddersRemaining = playerCount - Object.keys(existingBids).length;
+  if (roundCards > 1 && biddersRemaining > 0 && biddersRemaining <= 2) {
     const expectedRemainingBids = (roundCards - bidsSoFar) / biddersRemaining;
     if (estimatedTricks < expectedRemainingBids - 0.5) {
-      // Total bids are trending low — nudge up slightly
       estimatedTricks = Math.round((estimatedTricks + expectedRemainingBids) / 2);
       estimatedTricks = Math.max(0, Math.min(roundCards, estimatedTricks));
     }
@@ -230,12 +229,11 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
   // (e.g. Ace of trump in a 1-card round = guaranteed winner)
   let finalBid = estimatedTricks;
 
-  // Apply randomness for uncertainty — but not when the outcome is near-certain
-  // (e.g. Ace of trump leading a 1-card round = guaranteed, don't randomize that)
-  const preRoundWinProb = roundCards <= 3 ? estimatedTricks / Math.max(roundCards, 1) : 0;
-  const isNearCertain = roundCards <= 3 && preRoundWinProb > 0.85;
+  // Apply randomness for uncertainty — but not for 1-card rounds (deterministic)
+  // or when the outcome is near-certain in small rounds
+  const skipRandomness = roundCards === 1 || (roundCards <= 3 && estimatedTricks / Math.max(roundCards, 1) > 0.85);
 
-  if (!isNearCertain) {
+  if (!skipRandomness) {
     const r = Math.random();
     let randomAdjust;
     if (r < 0.6) randomAdjust = 0;       // 60% — stay at estimate
