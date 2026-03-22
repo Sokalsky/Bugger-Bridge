@@ -225,10 +225,13 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
   // Don't randomize when the estimate is based on near-certain cards
   // (e.g. Ace of trump in a 1-card round = guaranteed winner)
   let finalBid = estimatedTricks;
-  const preRoundEstimate = estimatedTricks; // save for last-bidder logic
 
-  if (roundCards > 1 || estimatedTricks === 0) {
-    // Multi-card rounds or zero bids: apply randomness
+  // Apply randomness for uncertainty — but not when the outcome is near-certain
+  // (e.g. Ace of trump leading a 1-card round = guaranteed, don't randomize that)
+  const preRoundWinProb = roundCards <= 3 ? estimatedTricks / Math.max(roundCards, 1) : 0;
+  const isNearCertain = roundCards <= 3 && preRoundWinProb > 0.85;
+
+  if (!isNearCertain) {
     const r = Math.random();
     let randomAdjust;
     if (r < 0.6) randomAdjust = 0;       // 60% — stay at estimate
@@ -236,7 +239,6 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
     else randomAdjust = 1;                // 10% — overbid by 1 (aggressive)
     finalBid = Math.max(0, Math.min(roundCards, estimatedTricks + randomAdjust));
   }
-  // For 1-card rounds with a positive estimate: bid exactly what we calculated (no randomness)
 
   // ONLY the last bidder is restricted from making total = roundCards
   if (isLastBidder) {
