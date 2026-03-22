@@ -4,10 +4,24 @@ import SuitIcon from "./SuitIcon";
 export default function Scoreboard({ room, myId, gameHistory, roundSummaryData, isHost, onNextRound, onNewGame }) {
   if (!roundSummaryData) return null;
 
-  const allRounds = [...gameHistory, roundSummaryData].filter((r, idx, arr) => {
-    if (r === roundSummaryData && arr.indexOf(r) !== idx) return false;
-    return r && r.cardsThisRound !== undefined && r.cardsThisRound >= 0;
-  });
+  // For Game Over, just use gameHistory (it has all rounds from the server).
+  // For mid-game round summary, append current roundSummaryData to history.
+  let allRounds;
+  if (roundSummaryData.isFinal && gameHistory.length > 0) {
+    // Game over — gameHistory already has everything
+    allRounds = gameHistory.filter(r => r && r.cardsThisRound !== undefined && r.cardsThisRound >= 0);
+  } else {
+    // Mid-game — combine history with current round, deduplicate by cardsThisRound + trump
+    const seen = new Set();
+    allRounds = [...gameHistory, roundSummaryData].filter(r => {
+      if (!r || r.cardsThisRound === undefined) return false;
+      if (r.isFinal) return false; // don't show the "Final" pseudo-round as a row
+      const key = `${r.cardsThisRound}|${r.trump}|${r.roundNumber}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
 
   return (
     <div className="overlay">
