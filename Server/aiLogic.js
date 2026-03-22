@@ -115,58 +115,62 @@ export function calculateAIBid(hand, roundCards, trump, existingBids, playerCoun
   else if (avgValue < 4.5) estimatedTricks -= 0.3;
 
   // ===== SMALL ROUND OVERRIDE (1-3 cards) =====
-  // In small rounds, the standard formula breaks down because:
-  // - Position matters hugely (leader sets the suit)
-  // - Trump vs non-trump dynamics change completely
-  // - A single card's probability of winning is more calculable
   if (roundCards <= 3) {
     const bidPosition = Object.keys(existingBids).length; // 0 = first bidder = leader
-    const isLeading = bidPosition === 0; // first bidder leads first trick
+    const isLeading = bidPosition === 0;
 
-    // Calculate per-card win probability directly
-    let totalWinProb = 0;
-    for (const card of hand) {
+    if (roundCards === 1) {
+      // ===== 1-CARD ROUND: near-deterministic bidding =====
+      // Statistics for 4 players:
+      // - Leader ALWAYS has >50% chance (sets the suit). Bid 1.
+      // - Middle positions have ~15-25% chance. Bid 0.
+      // - Last bidder is constrained by bugger rule.
+      const card = hand[0];
       const v = RANK_VALUES[card.rank] || 0;
       const isTrump = card.suit === trump && trump !== "No Trump";
 
-      if (trump === "No Trump") {
-        if (isLeading) {
-          // Leading in No Trump: you win if nobody has your suit, OR nobody has higher
-          // P(nobody follows suit) with 3 opponents ≈ 0.44 for a 1-card round
-          // P(nobody has higher) depends on rank
-          const baseWin = roundCards === 1 ? 0.40 : 0.25; // leader advantage
-          const rankBonus = v / 13 * 0.55; // Ace = +0.55, 2 = +0.08
-          totalWinProb += Math.min(1, baseWin + rankBonus);
-        } else {
-          // Not leading: need to follow suit AND beat everyone
-          // Much lower probability
-          const rankBonus = v / 13 * 0.3;
-          totalWinProb += rankBonus;
-        }
+      if (isLeading) {
+        // Leader always bids 1 — you set the suit, >50% win rate even with a 2
+        estimatedTricks = 1;
+      } else if (trump !== "No Trump" && isTrump) {
+        // Holding trump in a trump round, not leading — still strong
+        // Trump beats any non-trump lead. ~75% chance the leader leads non-trump.
+        estimatedTricks = 1;
       } else {
-        // Trump round
-        if (isTrump) {
-          // ANY trump card is strong — beats all non-trump
-          // Only loses to higher trump
-          const trumpRankFraction = v / 13; // how high in the trump suit
+        // Not leading, not trump (or No Trump middle position)
+        // Very low chance of winning — need leader to pick your suit AND you beat them
+        estimatedTricks = 0;
+      }
+    } else {
+      // 2-3 card rounds: use probability-based approach
+      let totalWinProb = 0;
+      for (const card of hand) {
+        const v = RANK_VALUES[card.rank] || 0;
+        const isTrump = card.suit === trump && trump !== "No Trump";
+
+        if (trump === "No Trump") {
           if (isLeading) {
-            totalWinProb += 0.6 + trumpRankFraction * 0.35; // low trump ~0.7, Ace trump ~0.95
+            const baseWin = 0.25;
+            const rankBonus = v / 13 * 0.55;
+            totalWinProb += Math.min(1, baseWin + rankBonus);
           } else {
-            totalWinProb += 0.4 + trumpRankFraction * 0.4; // can trump others' leads
+            totalWinProb += v / 13 * 0.25;
           }
         } else {
-          // Non-trump card in a trump round — weak
-          // Only wins if leading AND nobody has trump AND nobody has higher in suit
-          if (isLeading) {
-            const rankBonus = v / 13 * 0.35;
-            totalWinProb += 0.15 + rankBonus; // off-suit Ace leading ≈ 0.50
+          if (isTrump) {
+            const trumpRankFraction = v / 13;
+            totalWinProb += isLeading ? (0.6 + trumpRankFraction * 0.35) : (0.4 + trumpRankFraction * 0.4);
           } else {
-            totalWinProb += v / 13 * 0.1; // very unlikely to win
+            if (isLeading) {
+              totalWinProb += 0.15 + v / 13 * 0.3;
+            } else {
+              totalWinProb += v / 13 * 0.1;
+            }
           }
         }
       }
+      estimatedTricks = totalWinProb;
     }
-    estimatedTricks = totalWinProb;
   }
 
   // Round and clamp
